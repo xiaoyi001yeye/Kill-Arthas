@@ -1,0 +1,78 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: fordring-postgres
+    environment:
+      POSTGRES_DB: fordring
+      POSTGRES_USER: fordring
+      POSTGRES_PASSWORD: fordring_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - fordring-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fordring -d fordring"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: fordring-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - fordring-redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: fordring-backend:0.1.0
+    container_name: fordring-backend
+    environment:
+      FORDRING_SERVER_PORT: 8080
+      FORDRING_DB_HOST: postgres
+      FORDRING_DB_PORT: 5432
+      FORDRING_DB_NAME: fordring
+      FORDRING_DB_USERNAME: fordring
+      FORDRING_DB_PASSWORD: fordring_dev
+      FORDRING_REDIS_HOST: redis
+      FORDRING_REDIS_PORT: 6379
+      FORDRING_OPERATOR_NAME: admin
+      FORDRING_CREDENTIAL_KEY_MODE: DATABASE_DEV
+      FORDRING_ALLOWED_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+      FORDRING_LOG_PATH: /app/logs
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./backend/logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_FORDRING_API_BASE_URL: http://localhost:8080
+        VITE_FORDRING_WS_BASE_URL: ws://localhost:8080
+        VITE_FORDRING_OPERATOR_NAME: admin
+    image: fordring-frontend:0.1.0
+    container_name: fordring-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      - backend
+
+volumes:
+  fordring-postgres-data:
+  fordring-redis-data:

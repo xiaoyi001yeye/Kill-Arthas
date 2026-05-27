@@ -1,0 +1,22 @@
+.DS_Store
+
+# Java
+backend/target/
+backend/logs/*.log
+backend/logs/*.log.*
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
+
+# Local env
+.env
+.env.local
+frontend/.env.local
+
+# IDE
+.idea/
+.vscode/
