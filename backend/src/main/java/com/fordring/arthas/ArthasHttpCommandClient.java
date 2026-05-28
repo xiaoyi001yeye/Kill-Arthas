@@ -16,7 +16,9 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
@@ -338,7 +340,214 @@ public class ArthasHttpCommandClient {
                     ? "[arthas] 命令执行完成，statusCode=0\n"
                     : "[arthas] 命令执行失败，statusCode=" + statusCode + optional("，", message) + "\n";
         }
+        if ("dashboard".equals(type)) {
+            return formatDashboard(result);
+        }
         return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(result) + "\n";
+    }
+
+    private String formatDashboard(JsonNode result) {
+        var output = new StringBuilder();
+        output.append("Dashboard\n");
+        appendThreadTable(output, firstPresent(result, "threads", "threadInfos", "threadInfo"));
+        appendMemoryTable(output, firstPresent(result, "memoryInfo", "memoryInfos", "memory"));
+        appendGcTable(output, firstPresent(result, "gcInfo", "gcInfos", "garbageCollectors", "garbageCollectorInfos"));
+        appendRuntimeTable(output, firstPresent(result, "runtimeInfo", "runtime"));
+        if (output.length() == "Dashboard\n".length()) {
+            return objectMapper.valueToTree(result).toPrettyString() + "\n";
+        }
+        return output.append('\n').toString();
+    }
+
+    private void appendThreadTable(StringBuilder output, JsonNode threads) {
+        if (!threads.isArray() || threads.isEmpty()) {
+            return;
+        }
+        var rows = new ArrayList<List<String>>();
+        for (var thread : threads) {
+            rows.add(List.of(
+                    text(thread, "id", "threadId"),
+                    text(thread, "name", "threadName"),
+                    text(thread, "group", "groupName"),
+                    text(thread, "priority"),
+                    text(thread, "state", "threadState"),
+                    percentText(thread, "cpu", "cpuUsage"),
+                    text(thread, "deltaTime", "deltaTimeMillis"),
+                    text(thread, "time", "cpuTime"),
+                    text(thread, "interrupted"),
+                    text(thread, "daemon")
+            ));
+        }
+        output.append('\n').append(table(List.of(
+                "ID", "NAME", "GROUP", "PRIORITY", "STATE", "%CPU", "DELTA_TIME", "TIME", "INTERRUPTED", "DAEMON"
+        ), rows));
+    }
+
+    private void appendMemoryTable(StringBuilder output, JsonNode memoryInfo) {
+        var rows = new ArrayList<List<String>>();
+        if (memoryInfo.isArray()) {
+            for (var memory : memoryInfo) {
+                rows.add(memoryRow(text(memory, "name", "pool", "memory"), memory));
+            }
+        } else if (memoryInfo.isObject()) {
+            memoryInfo.fields().forEachRemaining((entry) -> {
+                if (entry.getValue().isObject()) {
+                    rows.add(memoryRow(entry.getKey(), entry.getValue()));
+                }
+            });
+        }
+        if (rows.isEmpty()) {
+            return;
+        }
+        output.append('\n').append(table(List.of("Memory", "used", "total", "max", "usage"), rows));
+    }
+
+    private List<String> memoryRow(String name, JsonNode memory) {
+        return List.of(
+                valueOrDash(name),
+                sizeText(memory, "used"),
+                sizeText(memory, "total", "committed", "capacity"),
+                sizeText(memory, "max"),
+                usageText(memory, "usage")
+        );
+    }
+
+    private void appendGcTable(StringBuilder output, JsonNode gcInfo) {
+        var rows = new ArrayList<List<String>>();
+        if (gcInfo.isArray()) {
+            for (var gc : gcInfo) {
+                rows.add(gcRow(text(gc, "name", "gcName"), gc));
+            }
+        } else if (gcInfo.isObject()) {
+            gcInfo.fields().forEachRemaining((entry) -> {
+                if (entry.getValue().isObject()) {
+                    rows.add(gcRow(entry.getKey(), entry.getValue()));
+                } else {
+                    rows.add(List.of(entry.getKey(), entry.getValue().asText()));
+                }
+            });
+        }
+        if (rows.isEmpty()) {
+            return;
+        }
+        output.append('\n').append(table(List.of("GC", "value"), rows));
+    }
+
+    private List<String> gcRow(String name, JsonNode gc) {
+        var count = text(gc, "count", "collectionCount");
+        var time = text(gc, "time", "collectionTime", "time(ms)", "collectionTimeMillis");
+        var value = "-".equals(time) ? count : count + " / " + time + "ms";
+        return List.of(valueOrDash(name), valueOrDash(value));
+    }
+
+    private void appendRuntimeTable(StringBuilder output, JsonNode runtimeInfo) {
+        if (!runtimeInfo.isObject() || runtimeInfo.isEmpty()) {
+            return;
+        }
+        var rows = new ArrayList<List<String>>();
+        runtimeInfo.fields().forEachRemaining((entry) -> rows.add(List.of(entry.getKey(), entry.getValue().asText())));
+        output.append('\n').append(table(List.of("Runtime", "value"), rows));
+    }
+
+    private JsonNode firstPresent(JsonNode node, String... fields) {
+        for (var field : fields) {
+            var value = node.path(field);
+            if (!value.isMissingNode() && !value.isNull()) {
+                return value;
+            }
+        }
+        return objectMapper.missingNode();
+    }
+
+    private String text(JsonNode node, String... fields) {
+        var value = firstPresent(node, fields);
+        if (value.isMissingNode() || value.isNull()) {
+            return "-";
+        }
+        return value.asText("-");
+    }
+
+    private String sizeText(JsonNode node, String... fields) {
+        var value = firstPresent(node, fields);
+        if (value.isIntegralNumber()) {
+            return humanBytes(value.asLong());
+        }
+        return text(node, fields);
+    }
+
+    private String usageText(JsonNode node, String... fields) {
+        var value = firstPresent(node, fields);
+        if (!value.isNumber()) {
+            return text(node, fields);
+        }
+        var number = value.asDouble();
+        var percent = number <= 1 ? number * 100 : number;
+        return String.format("%.2f%%", percent);
+    }
+
+    private String percentText(JsonNode node, String... fields) {
+        var value = firstPresent(node, fields);
+        if (!value.isNumber()) {
+            return text(node, fields);
+        }
+        return String.format("%.2f", value.asDouble());
+    }
+
+    private String table(List<String> headers, List<List<String>> rows) {
+        var widths = new int[headers.size()];
+        for (var index = 0; index < headers.size(); index++) {
+            widths[index] = headers.get(index).length();
+        }
+        for (var row : rows) {
+            for (var index = 0; index < row.size(); index++) {
+                widths[index] = Math.max(widths[index], display(row.get(index)).length());
+            }
+        }
+        var output = new StringBuilder();
+        appendRow(output, headers, widths);
+        for (var row : rows) {
+            appendRow(output, row, widths);
+        }
+        return output.toString();
+    }
+
+    private void appendRow(StringBuilder output, List<String> values, int[] widths) {
+        for (var index = 0; index < values.size(); index++) {
+            if (index > 0) {
+                output.append("  ");
+            }
+            output.append(padRight(display(values.get(index)), widths[index]));
+        }
+        output.append('\n');
+    }
+
+    private String display(String value) {
+        return valueOrDash(value).replace('\n', ' ').replace('\r', ' ');
+    }
+
+    private String padRight(String value, int width) {
+        return value + " ".repeat(Math.max(0, width - value.length()));
+    }
+
+    private String humanBytes(long bytes) {
+        if (bytes < 0) {
+            return String.valueOf(bytes);
+        }
+        var units = List.of("B", "K", "M", "G", "T");
+        var value = (double) bytes;
+        var unitIndex = 0;
+        while (value >= 1024 && unitIndex < units.size() - 1) {
+            value /= 1024;
+            unitIndex++;
+        }
+        if (unitIndex == 0) {
+            return bytes + units.get(unitIndex);
+        }
+        return String.format(value >= 10 ? "%.0f%s" : "%.1f%s", value, units.get(unitIndex));
+    }
+
+    private String valueOrDash(String value) {
+        return value == null || value.isBlank() ? "-" : value;
     }
 
     private boolean isTerminated(JsonNode response, int commandJobId) {
