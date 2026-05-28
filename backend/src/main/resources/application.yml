@@ -29,6 +29,8 @@ fordring:
   arthas:
     default-telnet-port: ${FORDRING_ARTHAS_TELNET_PORT:3658}
     default-http-port: ${FORDRING_ARTHAS_HTTP_PORT:8563}
+    username: ${FORDRING_ARTHAS_USERNAME:arthas}
+    password: ${FORDRING_ARTHAS_PASSWORD:fordring_dev}
   access:
     default-ssh-port: ${FORDRING_ACCESS_SSH_PORT:22}
   cors:

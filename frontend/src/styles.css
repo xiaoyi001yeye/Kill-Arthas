@@ -20,7 +20,7 @@ body {
 
 .app-shell {
   display: grid;
-  grid-template-columns: var(--sidebar-width) 1fr;
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   min-height: 100vh;
 }
 
@@ -75,6 +75,7 @@ body {
 }
 
 .main {
+  min-width: 0;
   padding: 34px 42px 56px;
 }
 
@@ -82,11 +83,31 @@ body {
   margin: 0 0 8px;
   font-size: 26px;
   line-height: 34px;
+  overflow-wrap: anywhere;
 }
 
 .page-header p {
   margin: 0;
   color: var(--color-subtle);
+  overflow-wrap: anywhere;
+}
+
+.console-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.console-page-header > div:first-child {
+  min-width: 0;
+}
+
+.console-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
 }
 
 .stat-grid {
@@ -126,6 +147,8 @@ body {
   border: 1px solid var(--color-border);
   border-radius: 8px;
   background: #fff;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .toolbar {
@@ -147,7 +170,7 @@ body {
   border-radius: 8px;
   padding: 24px 30px;
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
   gap: 18px;
 }
 
@@ -157,10 +180,15 @@ body {
   margin-bottom: 8px;
 }
 
+.summary-item strong {
+  overflow-wrap: break-word;
+}
+
 .terminal {
   background: #020b12;
   color: #d8dee9;
   border-radius: 8px;
+  max-width: 100%;
   min-height: 430px;
   padding: 22px;
   font: 14px/1.65 "SFMono-Regular", Consolas, monospace;
@@ -168,8 +196,32 @@ body {
   white-space: pre-wrap;
 }
 
-.terminal .prompt {
-  color: #16d784;
+.terminal-xterm {
+  height: 430px;
+  min-height: 430px;
+  min-width: 0;
+  max-width: 100%;
+  width: 100%;
+  contain: layout paint;
+  overflow: hidden;
+  padding: 12px;
+  white-space: normal;
+}
+
+.terminal-xterm .xterm {
+  height: 100%;
+  max-width: 100%;
+  width: 100%;
+}
+
+.terminal-xterm .xterm-viewport,
+.terminal-xterm .xterm-screen {
+  border-radius: 6px;
+  max-width: 100%;
+}
+
+.terminal-xterm .xterm-viewport {
+  overflow-x: hidden !important;
 }
 
 .command-bar {
@@ -179,6 +231,44 @@ body {
   padding: 20px;
   display: flex;
   gap: 18px;
+}
+
+.console-picker {
+  margin-top: 34px;
+  padding: 12px 20px;
+}
+
+.console-target-row {
+  min-height: 86px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 20px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.console-target-row:last-child {
+  border-bottom: 0;
+}
+
+.console-target-main strong,
+.console-target-main span {
+  display: block;
+}
+
+.console-target-main strong {
+  font-size: 17px;
+  margin-bottom: 8px;
+}
+
+.console-target-main span,
+.empty-state {
+  color: var(--color-subtle);
+}
+
+.empty-state {
+  padding: 34px 0;
+  text-align: center;
 }
 
 .connection-grid {
@@ -234,5 +324,42 @@ body {
   .connection-grid,
   .port-grid {
     grid-template-columns: 1fr;
+  }
+  .console-page-header,
+  .console-header-actions,
+  .command-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .console-target-row {
+    grid-template-columns: 1fr;
+    padding: 18px 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .app-shell {
+    grid-template-columns: 88px minmax(0, 1fr);
+  }
+  .main {
+    min-width: 0;
+    padding: 34px 20px 48px;
+  }
+  .page-header h1 {
+    font-size: 24px;
+    line-height: 30px;
+  }
+  .summary-bar {
+    grid-template-columns: 1fr;
+    padding: 22px 24px;
+  }
+  .panel {
+    min-width: 0;
+  }
+  .terminal {
+    min-height: 360px;
+  }
+  .terminal-xterm {
+    height: 360px;
   }
 }

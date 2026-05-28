@@ -2,11 +2,12 @@ package com.fordring.websocket;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fordring.arthas.ArthasHttpCommandClient;
 import com.fordring.command.CommandService;
 import com.fordring.common.enums.CommandSource;
 import com.fordring.common.enums.CommandStatus;
-import com.fordring.common.enums.RiskLevel;
 import com.fordring.config.FordringProperties;
+import com.fordring.target.AccessTargetService;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
@@ -20,13 +21,18 @@ import java.util.concurrent.*;
 public class ConsoleWebSocketHandler extends TextWebSocketHandler {
     private final ObjectMapper objectMapper;
     private final CommandService commandService;
+    private final AccessTargetService targetService;
+    private final ArthasHttpCommandClient arthasHttpCommandClient;
     private final FordringProperties properties;
     private final ExecutorService executor = Executors.newCachedThreadPool();
-    private final ConcurrentMap<Long, Future<?>> runningTasks = new ConcurrentHashMap<>();
+    private final ConcurrentMap<Long, RunningTask> runningTasks = new ConcurrentHashMap<>();
 
-    public ConsoleWebSocketHandler(ObjectMapper objectMapper, CommandService commandService, FordringProperties properties) {
+    public ConsoleWebSocketHandler(ObjectMapper objectMapper, CommandService commandService, AccessTargetService targetService,
+                                   ArthasHttpCommandClient arthasHttpCommandClient, FordringProperties properties) {
         this.objectMapper = objectMapper;
         this.commandService = commandService;
+        this.targetService = targetService;
+        this.arthasHttpCommandClient = arthasHttpCommandClient;
         this.properties = properties;
     }
 
@@ -53,43 +59,42 @@ public class ConsoleWebSocketHandler extends TextWebSocketHandler {
                 true
         ), "admin");
         send(session, "COMMAND_STARTED", requestId, Map.of("executionId", execution.id));
+        var target = targetService.get(execution.targetId);
+        var arthasCommand = arthasHttpCommandClient.newCommand(target, command,
+                json.path("timeoutSeconds").isMissingNode() ? properties.command.defaultTimeoutSeconds : json.path("timeoutSeconds").asInt());
         var task = executor.submit(() -> {
             try {
-                var chunks = commandService.demoOutput(command).split("\n", -1);
-                for (var line : chunks) {
-                    if (Thread.currentThread().isInterrupted()) {
-                        commandService.finish(execution.id, CommandStatus.STOPPED, null);
-                        sendQuietly(session, "COMMAND_STOPPED", requestId, Map.of("executionId", execution.id));
-                        return;
-                    }
-                    var content = line + "\n";
+                arthasCommand.run((content) -> {
                     commandService.appendOutput(execution.id, content);
                     sendQuietly(session, "COMMAND_OUTPUT", requestId, Map.of("executionId", execution.id, "chunk", content));
-                    Thread.sleep(180);
-                }
+                });
                 var finished = commandService.finish(execution.id, CommandStatus.SUCCESS, null);
                 sendQuietly(session, "COMMAND_FINISHED", requestId,
                         Map.of("executionId", execution.id, "status", finished.status.name(), "durationMs", finished.durationMs));
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
+                commandService.finish(execution.id, CommandStatus.STOPPED, null);
+                sendQuietly(session, "COMMAND_STOPPED", requestId, Map.of("executionId", execution.id));
             } catch (Exception error) {
-                commandService.finish(execution.id, CommandStatus.FAILED, error.getMessage());
+                var message = errorMessage(error);
+                commandService.finish(execution.id, CommandStatus.FAILED, message);
                 sendQuietly(session, "COMMAND_FAILED", requestId,
-                        Map.of("executionId", execution.id, "message", error.getMessage()));
+                        Map.of("executionId", execution.id, "message", message));
             } finally {
                 runningTasks.remove(execution.id);
             }
         });
-        runningTasks.put(execution.id, task);
+        runningTasks.put(execution.id, new RunningTask(task, arthasCommand));
     }
 
     private void stop(WebSocketSession session, JsonNode json) throws Exception {
         var requestId = json.path("requestId").asText();
         var executionId = json.path("executionId").asLong();
         send(session, "COMMAND_STOPPING", requestId, Map.of("executionId", executionId));
-        var task = runningTasks.get(executionId);
-        if (task != null) {
-            task.cancel(true);
+        var runningTask = runningTasks.get(executionId);
+        if (runningTask != null) {
+            runningTask.arthasCommand().interrupt();
+            runningTask.future().cancel(true);
         } else {
             commandService.finish(executionId, CommandStatus.STOPPED, null);
             send(session, "COMMAND_STOPPED", requestId, Map.of("executionId", executionId));
@@ -116,5 +121,14 @@ public class ConsoleWebSocketHandler extends TextWebSocketHandler {
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
         // MVP keeps the persisted command history even if the browser leaves the console.
+    }
+
+    private static String errorMessage(Exception error) {
+        return error.getMessage() == null || error.getMessage().isBlank()
+                ? error.getClass().getSimpleName()
+                : error.getMessage();
+    }
+
+    private record RunningTask(Future<?> future, ArthasHttpCommandClient.RunningCommand arthasCommand) {
     }
 }

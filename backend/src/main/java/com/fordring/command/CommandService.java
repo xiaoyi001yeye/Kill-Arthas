@@ -82,8 +82,6 @@ public class CommandService {
     @Transactional
     public ExecutionStarted executeSync(ExecuteRequest request, String operatorName) {
         var execution = createExecution(request, operatorName);
-        appendOutput(execution.id, demoOutput(request.command()));
-        finish(execution.id, CommandStatus.SUCCESS, null);
         return new ExecutionStarted(execution.id, request.targetId(), CommandStatus.RUNNING, execution.executedAt);
     }
 
@@ -153,14 +151,6 @@ public class CommandService {
         return executionRepository.save(execution);
     }
 
-    public String demoOutput(String command) {
-        return "[arthas@12345]$ " + command + "\n"
-                + "ID   NAME                   GROUP  PRIORITY  STATE     %CPU\n"
-                + "-1   main                   main   5         RUNNABLE  8.43\n"
-                + "-1   http-nio-8080-exec-1   main   5         RUNNABLE  2.12\n"
-                + "\nMemory       used   total   max    usage\nheap         128M   256M    1024M  12.50%\n";
-    }
-
     private String snapshot(AccessTarget target) {
         try {
             return objectMapper.writeValueAsString(Map.of(
@@ -179,4 +169,3 @@ public class CommandService {
     public record OutputResult(Long executionId, List<OutputChunkDto> chunks, int nextSequence, boolean outputTruncated) {
     }
 }
-

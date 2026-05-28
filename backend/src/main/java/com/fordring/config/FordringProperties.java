@@ -23,6 +23,8 @@ public class FordringProperties {
     public static class Arthas {
         public int defaultTelnetPort = 3658;
         public int defaultHttpPort = 8563;
+        public String username = "arthas";
+        public String password = "fordring_dev";
     }
 
     public static class Access {

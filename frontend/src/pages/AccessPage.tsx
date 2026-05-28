@@ -327,6 +327,7 @@ export default function AccessPage() {
           pagination={{ pageSize: 10, total: targets.data?.total ?? 0 }}
           columns={[
             { title: '名称', dataIndex: 'name' },
+            { title: '环境', render: (_, row) => row.environment || '-' },
             { title: '主机', dataIndex: 'host' },
             { title: '目标类型', render: (_, row) => row.targetType === 'DOCKER_CONTAINER' ? 'Docker 容器' : '物理机 Java' },
             { title: '目标', render: (_, row) => row.processId ? `PID ${row.processId}` : '-' },
@@ -354,7 +355,7 @@ export default function AccessPage() {
                     安装 Arthas
                   </Button>
                   {row.arthasStatus === 'ATTACHED'
-                    ? <><Link to={`/console/${row.id}`}>进入控制台</Link><Button type="link" danger onClick={() => detach.mutate(row.id)}>断开</Button></>
+                    ? <><Link to={`/console/${row.id}`}>进入 {row.environment || row.name} 控制台</Link><Button type="link" danger onClick={() => detach.mutate(row.id)}>断开</Button></>
                     : <Button type="link" onClick={() => attach.mutate(row.id)}>接入 Arthas</Button>}
                   <Button type="link" danger icon={<Trash2 size={14} />} loading={deleteTarget.isPending} onClick={() => confirmDelete(row)}>删除</Button>
                 </>

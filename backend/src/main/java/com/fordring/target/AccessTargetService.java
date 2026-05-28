@@ -6,6 +6,7 @@ import com.fordring.common.enums.ArthasStatus;
 import com.fordring.common.enums.TargetType;
 import com.fordring.config.FordringProperties;
 import com.fordring.credential.CredentialService;
+import com.fordring.arthas.ArthasInstallationService;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -18,13 +19,16 @@ public class AccessTargetService {
     private final CredentialService credentialService;
     private final AuditService auditService;
     private final FordringProperties properties;
+    private final ArthasInstallationService arthasInstallationService;
 
     public AccessTargetService(AccessTargetRepository repository, CredentialService credentialService,
-                               AuditService auditService, FordringProperties properties) {
+                               AuditService auditService, FordringProperties properties,
+                               ArthasInstallationService arthasInstallationService) {
         this.repository = repository;
         this.credentialService = credentialService;
         this.auditService = auditService;
         this.properties = properties;
+        this.arthasInstallationService = arthasInstallationService;
     }
 
     public record CredentialInput(String name, String secret) {
@@ -145,20 +149,40 @@ public class AccessTargetService {
         var target = get(id);
         target.telnetPort = telnetPort == null ? target.telnetPort : telnetPort;
         target.httpPort = httpPort == null ? target.httpPort : httpPort;
-        target.arthasStatus = ArthasStatus.ATTACHED;
-        target.latestOperationTime = Instant.now();
-        target.latestFailureReason = null;
-        auditService.record("TARGET_ATTACH", "ACCESS_TARGET", id, operatorName, "SUCCESS", null, null, null);
-        return AccessTargetDto.from(repository.save(target));
+        try {
+            arthasInstallationService.attach(target, operatorName);
+            target.arthasStatus = ArthasStatus.ATTACHED;
+            target.latestOperationTime = Instant.now();
+            target.latestFailureReason = null;
+            auditService.record("TARGET_ATTACH", "ACCESS_TARGET", id, operatorName, "SUCCESS", null, null, null);
+            return AccessTargetDto.from(repository.save(target));
+        } catch (RuntimeException error) {
+            target.arthasStatus = ArthasStatus.ATTACH_FAILED;
+            target.latestOperationTime = Instant.now();
+            target.latestFailureReason = error.getMessage();
+            repository.save(target);
+            auditService.record("TARGET_ATTACH", "ACCESS_TARGET", id, operatorName, "FAILED", error.getMessage(), null, null);
+            throw error;
+        }
     }
 
     @Transactional
     public AccessTargetDto detach(Long id, String operatorName) {
         var target = get(id);
-        target.arthasStatus = ArthasStatus.DISCONNECTED;
-        target.latestOperationTime = Instant.now();
-        auditService.record("TARGET_DETACH", "ACCESS_TARGET", id, operatorName, "SUCCESS", null, null, null);
-        return AccessTargetDto.from(repository.save(target));
+        try {
+            arthasInstallationService.detach(target, operatorName);
+            target.arthasStatus = ArthasStatus.DISCONNECTED;
+            target.latestOperationTime = Instant.now();
+            target.latestFailureReason = null;
+            auditService.record("TARGET_DETACH", "ACCESS_TARGET", id, operatorName, "SUCCESS", null, null, null);
+            return AccessTargetDto.from(repository.save(target));
+        } catch (RuntimeException error) {
+            target.latestOperationTime = Instant.now();
+            target.latestFailureReason = error.getMessage();
+            repository.save(target);
+            auditService.record("TARGET_DETACH", "ACCESS_TARGET", id, operatorName, "FAILED", error.getMessage(), null, null);
+            throw error;
+        }
     }
 
     public AccessTarget get(Long id) {

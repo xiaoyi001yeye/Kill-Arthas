@@ -12,7 +12,7 @@ export default function AppLayout() {
             <Box size={22} />
             <span>接入管理</span>
           </NavLink>
-          <NavLink to="/console/1">
+          <NavLink to="/console">
             <TerminalSquare size={22} />
             <span>控制台</span>
           </NavLink>
@@ -32,4 +32,3 @@ export default function AppLayout() {
     </div>
   );
 }
-

@@ -19,6 +19,7 @@ const router = createBrowserRouter([
     children: [
       { index: true, element: <Navigate to="/access" replace /> },
       { path: 'access', element: <AccessPage /> },
+      { path: 'console', element: <ConsolePage /> },
       { path: 'console/:targetId', element: <ConsolePage /> },
       { path: 'commands', element: <CommandsPage /> },
       { path: 'commands/:executionId', element: <CommandsPage /> }
@@ -35,4 +36,3 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     </ConfigProvider>
   </React.StrictMode>
 );
-

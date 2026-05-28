@@ -1,78 +1,102 @@
-import { Button, Input, message, Space } from 'antd';
-import { Copy, Play, Square, Trash2 } from 'lucide-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Button, Empty, Input, message, Space } from 'antd';
+import { ArrowRight, Copy, Play, Power, Square, Trash2 } from 'lucide-react';
+import { useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { Link, useParams } from 'react-router-dom';
-import { api, unwrap, wsBaseUrl } from '../api';
-import type { AccessTarget } from '../types';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Link, useNavigate, useParams } from 'react-router-dom';
+import { api, unwrap } from '../api';
+import { TerminalView, type TerminalViewHandle } from '../components/terminal/TerminalView';
+import { useTerminalSession } from '../components/terminal/useTerminalSession';
+import type { AccessTarget, PageResult } from '../types';
 import { TargetStatusTag } from '../ui/StatusTag';
 
 export default function ConsolePage() {
-  const { targetId = '1' } = useParams();
-  const id = Number(targetId);
-  const [command, setCommand] = useState('dashboard');
-  const [output, setOutput] = useState('');
-  const [running, setRunning] = useState(false);
-  const [executionId, setExecutionId] = useState<number>();
-  const wsRef = useRef<WebSocket>();
-  const target = useQuery({ queryKey: ['access-target', id], queryFn: () => unwrap<AccessTarget>(api.get(`/api/access-targets/${id}`)), retry: false });
+  const { targetId } = useParams();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const id = targetId ? Number(targetId) : undefined;
+  const hasSelectedTarget = Number.isFinite(id);
+  const [command, setCommand] = useState('dashboard -n 1');
+  const terminalRef = useRef<TerminalViewHandle>(null);
+  const terminalSession = useTerminalSession({
+    enabled: hasSelectedTarget,
+    targetId: id,
+    terminalRef
+  });
+  const target = useQuery({
+    queryKey: ['access-target', id],
+    queryFn: () => unwrap<AccessTarget>(api.get(`/api/access-targets/${id}`)),
+    enabled: hasSelectedTarget,
+    retry: false
+  });
+  const detach = useMutation({
+    mutationFn: () => unwrap<AccessTarget>(api.post(`/api/access-targets/${id}/detach`)),
+    onSuccess: async () => {
+      terminalSession.close();
+      terminalRef.current?.clear();
+      message.success('已断开当前控制台');
+      await queryClient.invalidateQueries({ queryKey: ['access-target', id] });
+      await queryClient.invalidateQueries({ queryKey: ['access-targets'] });
+      await queryClient.invalidateQueries({ queryKey: ['access-stats'] });
+      navigate('/console');
+    },
+    onError: (error) => {
+      message.error(error instanceof Error ? error.message : '断开失败');
+    }
+  });
 
-  useEffect(() => {
-    const ws = new WebSocket(`${wsBaseUrl}/ws/console?targetId=${id}`);
-    wsRef.current = ws;
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      if (data.type === 'COMMAND_STARTED') {
-        setExecutionId(data.executionId);
-        setRunning(true);
-      }
-      if (data.type === 'COMMAND_OUTPUT') {
-        setOutput((prev) => prev + data.chunk);
-      }
-      if (data.type === 'COMMAND_FINISHED' || data.type === 'COMMAND_FAILED' || data.type === 'COMMAND_STOPPED') {
-        setRunning(false);
-      }
-    };
-    ws.onerror = () => message.error('控制台连接失败');
-    return () => ws.close();
-  }, [id]);
-
-  const quickCommands = useMemo(() => ['dashboard', 'thread', 'jvm', 'memory'], []);
+  const quickCommands = useMemo(() => [
+    { label: 'dashboard', command: 'dashboard -n 1' },
+    { label: 'thread', command: 'thread' },
+    { label: 'jvm', command: 'jvm' },
+    { label: 'memory', command: 'memory' }
+  ], []);
 
   const execute = (nextCommand = command) => {
-    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+    if (!hasSelectedTarget || id === undefined) {
+      message.warning('请先选择要进入的控制台');
+      return;
+    }
+    if (!terminalSession.ready) {
       message.warning('控制台连接尚未就绪');
       return;
     }
     setCommand(nextCommand);
-    setOutput((prev) => prev + `\n[arthas@${target.data?.processId ?? id}]$ ${nextCommand}\n`);
-    wsRef.current.send(JSON.stringify({
-      type: 'EXECUTE_COMMAND',
-      requestId: crypto.randomUUID(),
-      targetId: id,
-      command: nextCommand,
-      timeoutSeconds: 30,
-      source: 'MANUAL',
-      riskConfirmed: true
-    }));
+    terminalSession.execute({ command: nextCommand });
   };
 
   const stop = () => {
-    if (!executionId || !wsRef.current) return;
-    wsRef.current.send(JSON.stringify({
-      type: 'STOP_COMMAND',
-      requestId: crypto.randomUUID(),
-      executionId,
-      targetId: id
-    }));
+    terminalSession.stop();
   };
+
+  if (!hasSelectedTarget) {
+    return <ConsoleTargetPicker />;
+  }
 
   return (
     <>
-      <div className="page-header">
-        <h1>控制台</h1>
-        <p>对已接入目标执行 Arthas 命令</p>
+      <div className="page-header console-page-header">
+        <div>
+          <h1>{target.data ? `${target.data.environment || '未标环境'} / ${target.data.name}` : '控制台'}</h1>
+          <p>
+            当前控制台：
+            {target.data
+              ? `${target.data.host}${target.data.containerName ? ` / ${target.data.containerName}` : ''}`
+              : '正在加载目标信息'}
+          </p>
+        </div>
+        <div className="console-header-actions">
+          <Button
+            danger
+            icon={<Power size={16} />}
+            loading={detach.isPending}
+            disabled={!target.data || target.data.arthasStatus !== 'ATTACHED'}
+            onClick={() => detach.mutate()}
+          >
+            断开
+          </Button>
+          <Link to="/console"><Button>切换控制台</Button></Link>
+        </div>
       </div>
       {target.data && (
         <div className="summary-bar">
@@ -87,17 +111,54 @@ export default function ConsolePage() {
       )}
       <div className="panel" style={{ padding: 20 }}>
         <Space style={{ marginBottom: 20 }}>
-          {quickCommands.map((item) => <Button key={item} onClick={() => execute(item)}>{item}</Button>)}
+          {quickCommands.map((item) => <Button key={item.label} onClick={() => execute(item.command)}>{item.label}</Button>)}
         </Space>
-        <div className="terminal">{output || <span className="prompt">[arthas]$ 等待命令执行...</span>}</div>
+        <TerminalView ref={terminalRef} />
       </div>
       <div className="command-bar">
-        <Input value={command} onChange={(event) => setCommand(event.target.value)} placeholder="输入 Arthas 命令，例如 dashboard / thread / jvm" onPressEnter={() => execute()} />
-        <Button type="primary" icon={<Play size={16} />} onClick={() => execute()} disabled={running}>执行</Button>
-        <Button icon={<Square size={16} />} onClick={stop} disabled={!running}>停止</Button>
-        <Button icon={<Trash2 size={16} />} onClick={() => setOutput('')}>清空</Button>
-        <Button icon={<Copy size={16} />} onClick={() => navigator.clipboard.writeText(output)}>复制</Button>
+        <Input value={command} onChange={(event) => setCommand(event.target.value)} placeholder="输入 Arthas 命令，例如 dashboard -n 1 / thread / jvm" onPressEnter={() => execute()} />
+        <Button type="primary" icon={<Play size={16} />} onClick={() => execute()} disabled={terminalSession.running}>执行</Button>
+        <Button icon={<Square size={16} />} onClick={stop} disabled={!terminalSession.running}>停止</Button>
+        <Button icon={<Trash2 size={16} />} onClick={() => terminalRef.current?.clear()}>清空</Button>
+        <Button icon={<Copy size={16} />} onClick={() => navigator.clipboard.writeText(terminalRef.current?.copyText() ?? '')}>复制</Button>
         <Link to="/commands">查看命令历史</Link>
+      </div>
+    </>
+  );
+}
+
+function ConsoleTargetPicker() {
+  const targets = useQuery({
+    queryKey: ['access-targets', 'console-picker'],
+    queryFn: () => unwrap<PageResult<AccessTarget>>(api.get('/api/access-targets?page=1&pageSize=50'))
+  });
+  const attachedTargets = (targets.data?.items ?? []).filter((item) => item.arthasStatus === 'ATTACHED');
+
+  return (
+    <>
+      <div className="page-header">
+        <h1>选择控制台</h1>
+        <p>先确认要进入的接入环境，再打开对应 Arthas 控制台</p>
+      </div>
+      <div className="panel console-picker">
+        {targets.isLoading && <div className="empty-state">正在加载已接入环境...</div>}
+        {!targets.isLoading && attachedTargets.length === 0 && (
+          <Empty description="暂无已接入的控制台">
+            <Link to="/access"><Button type="primary">去接入管理</Button></Link>
+          </Empty>
+        )}
+        {attachedTargets.map((item) => (
+          <div className="console-target-row" key={item.id}>
+            <div className="console-target-main">
+              <strong>{item.environment || '未标环境'} / {item.name}</strong>
+              <span>{item.host}{item.containerName ? ` / ${item.containerName}` : ''}{item.processId ? ` / PID ${item.processId}` : ''}</span>
+            </div>
+            <TargetStatusTag status={item.arthasStatus} />
+            <Link to={`/console/${item.id}`}>
+              <Button type="primary" icon={<ArrowRight size={16} />}>进入控制台</Button>
+            </Link>
+          </div>
+        ))}
       </div>
     </>
   );
