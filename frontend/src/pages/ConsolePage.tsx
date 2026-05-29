@@ -1,5 +1,5 @@
 import { App as AntdApp, Button, Checkbox, Divider, Drawer, Empty, Form, Input, InputNumber, Select, Space, Switch } from 'antd';
-import { Activity, ArrowRight, Copy, Flame, Play, Power, RotateCw, Square, Trash2 } from 'lucide-react';
+import { Activity, ArrowRight, Copy, Eye, Flame, Play, Power, RotateCw, Square, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -27,6 +27,25 @@ type TraceFormValues = {
   timeoutSeconds: number;
   regex?: boolean;
   includeJdkMethod?: boolean;
+  classLoaderHash?: string;
+  excludeClassPattern?: string;
+};
+
+type WatchFormValues = {
+  classPattern: string;
+  methodPattern: string;
+  expression: string;
+  condition?: string;
+  expandDepth: number;
+  times: number;
+  maxMatch: number;
+  timeoutSeconds: number;
+  before?: boolean;
+  success?: boolean;
+  exception?: boolean;
+  finish?: boolean;
+  regex?: boolean;
+  verbose?: boolean;
   classLoaderHash?: string;
   excludeClassPattern?: string;
 };
@@ -65,6 +84,22 @@ const PROFILER_INITIAL_VALUES: ProfilerFormValues = {
   topN: 10
 };
 
+const WATCH_INITIAL_VALUES: WatchFormValues = {
+  classPattern: '',
+  methodPattern: '',
+  expression: '{params, target, returnObj}',
+  expandDepth: 2,
+  times: 1,
+  maxMatch: 50,
+  timeoutSeconds: 300,
+  before: false,
+  success: false,
+  exception: false,
+  finish: true,
+  regex: false,
+  verbose: false
+};
+
 export default function ConsolePage() {
   const { targetId } = useParams();
   const navigate = useNavigate();
@@ -74,6 +109,7 @@ export default function ConsolePage() {
   const hasSelectedTarget = Number.isFinite(id);
   const [command, setCommand] = useState('dashboard -n 1');
   const [traceOpen, setTraceOpen] = useState(false);
+  const [watchOpen, setWatchOpen] = useState(false);
   const [profilerOpen, setProfilerOpen] = useState(false);
   const [profilerRun, setProfilerRun] = useState<ProfilerRun>();
   const [, setProfilerTick] = useState(0);
@@ -303,6 +339,7 @@ export default function ConsolePage() {
         <Space className="console-quick-actions">
           {quickCommands.map((item) => <Button key={item.label} onClick={() => execute(item.command, 'QUICK')}>{item.label}</Button>)}
           <Button icon={<Activity size={16} />} onClick={() => setTraceOpen(true)}>Trace</Button>
+          <Button icon={<Eye size={16} />} onClick={() => setWatchOpen(true)}>Watch</Button>
           <Button icon={<Flame size={16} />} onClick={() => setProfilerOpen(true)}>Profiler</Button>
         </Space>
         <TerminalView ref={terminalRef} />
@@ -322,6 +359,16 @@ export default function ConsolePage() {
         onSubmit={async ({ command: traceCommand, timeoutSeconds }) => {
           if (await execute(traceCommand, 'MANUAL', timeoutSeconds)) {
             setTraceOpen(false);
+          }
+        }}
+      />
+      <WatchCommandDrawer
+        open={watchOpen}
+        running={terminalSession.running}
+        onClose={() => setWatchOpen(false)}
+        onSubmit={async ({ command: watchCommand, timeoutSeconds }) => {
+          if (await execute(watchCommand, 'MANUAL', timeoutSeconds)) {
+            setWatchOpen(false);
           }
         }}
       />
@@ -481,6 +528,157 @@ function TraceCommandDrawer({
         <Form.Item name="includeJdkMethod" valuePropName="checked">
           <Checkbox>包含 JDK 方法调用</Checkbox>
         </Form.Item>
+        <Form.Item label="ClassLoader Hash" name="classLoaderHash">
+          <Input placeholder="可选，例如 3d4eac69" />
+        </Form.Item>
+        <Form.Item label="排除类表达式" name="excludeClassPattern">
+          <Input placeholder="可选，例如 com.example.Filter" />
+        </Form.Item>
+
+        <div className="trace-command-preview">
+          <span>命令预览</span>
+          <code>{commandPreview}</code>
+        </div>
+      </Form>
+    </Drawer>
+  );
+}
+
+function WatchCommandDrawer({
+  onClose,
+  onSubmit,
+  open,
+  running
+}: {
+  onClose: () => void;
+  onSubmit: (request: { command: string; timeoutSeconds: number }) => void | Promise<void>;
+  open: boolean;
+  running: boolean;
+}) {
+  const [form] = Form.useForm<WatchFormValues>();
+  const values = Form.useWatch([], form) ?? WATCH_INITIAL_VALUES;
+  const commandPreview = buildWatchCommand(values);
+
+  return (
+    <Drawer
+      destroyOnClose
+      open={open}
+      title="Watch 方法数据"
+      width={620}
+      onClose={onClose}
+      footer={(
+        <div className="trace-drawer-footer">
+          <Button onClick={onClose}>取消</Button>
+          <Button type="primary" icon={<Eye size={16} />} disabled={running} onClick={() => form.submit()}>
+            开始 Watch
+          </Button>
+        </div>
+      )}
+    >
+      <Form
+        form={form}
+        initialValues={WATCH_INITIAL_VALUES}
+        layout="vertical"
+        onFinish={(formValues) => onSubmit({
+          command: buildWatchCommand(formValues),
+          timeoutSeconds: formValues.timeoutSeconds
+        })}
+      >
+        <Form.Item
+          label="类名表达式"
+          name="classPattern"
+          rules={[
+            { required: true, message: '请输入类名表达式' },
+            { pattern: /^\S+$/, message: '类名表达式不能包含空格' }
+          ]}
+        >
+          <Input placeholder="com.example.OrderService 或 *OrderService" />
+        </Form.Item>
+        <Form.Item
+          label="方法表达式"
+          name="methodPattern"
+          rules={[
+            { required: true, message: '请输入方法表达式' },
+            { pattern: /^\S+$/, message: '方法表达式不能包含空格' }
+          ]}
+        >
+          <Input placeholder="createOrder 或 *" />
+        </Form.Item>
+
+        <Form.Item
+          label="观察表达式"
+          name="expression"
+          tooltip="Arthas watch 的 OGNL 表达式，用来指定输出入参、返回值、异常对象或目标对象。"
+          rules={[{ required: true, message: '请输入观察表达式' }]}
+        >
+          <Input.TextArea rows={2} placeholder="{params, target, returnObj} 或 {params, returnObj, throwExp}" />
+        </Form.Item>
+        <Form.Item
+          label="条件表达式"
+          name="condition"
+          tooltip="可选。只输出满足条件的调用，例如 #cost > 100 或 params[0] != null。"
+        >
+          <Input.TextArea rows={2} placeholder="#cost > 100 或 params[0] != null" />
+        </Form.Item>
+
+        <div className="watch-location-grid">
+          <Form.Item name="before" valuePropName="checked">
+            <Checkbox>调用前 -b</Checkbox>
+          </Form.Item>
+          <Form.Item name="success" valuePropName="checked">
+            <Checkbox>正常返回 -s</Checkbox>
+          </Form.Item>
+          <Form.Item name="exception" valuePropName="checked">
+            <Checkbox>异常抛出 -e</Checkbox>
+          </Form.Item>
+          <Form.Item name="finish" valuePropName="checked">
+            <Checkbox>结束时 -f</Checkbox>
+          </Form.Item>
+        </div>
+
+        <div className="trace-form-grid">
+          <Form.Item
+            label="展开深度"
+            name="expandDepth"
+            tooltip="对应 -x，Arthas 最大支持 4。"
+            rules={[{ required: true, message: '请输入展开深度' }]}
+          >
+            <InputNumber min={1} max={4} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item
+            label="捕获次数"
+            name="times"
+            tooltip="对应 -n，达到次数后自动结束。"
+            rules={[{ required: true, message: '请输入捕获次数' }]}
+          >
+            <InputNumber min={1} max={100} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item
+            label="最大匹配类数"
+            name="maxMatch"
+            tooltip="对应 -m，限制增强的类数量。"
+            rules={[{ required: true, message: '请输入最大匹配类数' }]}
+          >
+            <InputNumber min={1} max={200} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item
+            label="等待窗口 秒"
+            name="timeoutSeconds"
+            tooltip="Fordring 等待 watch 输出的最长时间；达到捕获次数会提前结束，也可以手动停止。"
+            rules={[{ required: true, message: '请输入等待窗口' }]}
+          >
+            <InputNumber min={10} max={3600} step={30} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item label="正则匹配" name="regex" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+          <Form.Item label="Verbose" name="verbose" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+        </div>
+
+        <Divider />
+
         <Form.Item label="ClassLoader Hash" name="classLoaderHash">
           <Input placeholder="可选，例如 3d4eac69" />
         </Form.Item>
@@ -690,6 +888,54 @@ function buildTraceCommand(values: Partial<TraceFormValues>) {
   }
   if (values.maxMatch) {
     args.push('-m', String(values.maxMatch));
+  }
+  if (values.excludeClassPattern?.trim()) {
+    args.push('--exclude-class-pattern', values.excludeClassPattern.trim());
+  }
+
+  return args.join(' ');
+}
+
+function buildWatchCommand(values: Partial<WatchFormValues>) {
+  const classPattern = values.classPattern?.trim() ?? '';
+  const methodPattern = values.methodPattern?.trim() ?? '';
+  const expression = values.expression?.trim() || WATCH_INITIAL_VALUES.expression;
+  const condition = values.condition?.trim();
+  const args = ['watch'];
+
+  if (values.regex) {
+    args.push('-E');
+  }
+  if (values.verbose) {
+    args.push('-v');
+  }
+  if (values.before) {
+    args.push('-b');
+  }
+  if (values.success) {
+    args.push('-s');
+  }
+  if (values.exception) {
+    args.push('-e');
+  }
+  if (values.finish || (!values.before && !values.success && !values.exception)) {
+    args.push('-f');
+  }
+  if (classPattern) {
+    args.push(classPattern);
+  }
+  if (methodPattern) {
+    args.push(methodPattern);
+  }
+  args.push(quoteArthasArgument(expression));
+  if (condition) {
+    args.push(quoteArthasArgument(condition));
+  }
+  args.push('-x', String(values.expandDepth ?? WATCH_INITIAL_VALUES.expandDepth));
+  args.push('-n', String(values.times ?? WATCH_INITIAL_VALUES.times));
+  args.push('-m', String(values.maxMatch ?? WATCH_INITIAL_VALUES.maxMatch));
+  if (values.classLoaderHash?.trim()) {
+    args.push('-c', values.classLoaderHash.trim());
   }
   if (values.excludeClassPattern?.trim()) {
     args.push('--exclude-class-pattern', values.excludeClassPattern.trim());
