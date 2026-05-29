@@ -233,6 +233,55 @@ body {
   gap: 18px;
 }
 
+.console-quick-actions {
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.trace-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 16px;
+}
+
+.trace-command-preview {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-subtle);
+  padding: 14px 16px;
+  display: grid;
+  gap: 8px;
+}
+
+.trace-command-preview span {
+  color: var(--color-subtle);
+  font-size: 12px;
+}
+
+.trace-command-preview code,
+.risk-confirm-content code {
+  color: #101828;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.trace-drawer-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.risk-confirm-content {
+  display: grid;
+  gap: 12px;
+}
+
+.risk-confirm-content p {
+  margin: 0;
+}
+
 .console-picker {
   margin-top: 34px;
   padding: 12px 20px;
@@ -301,6 +350,39 @@ body {
   margin-top: 16px;
 }
 
+.install-prompt-detail {
+  margin-top: 18px;
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 10px 14px;
+}
+
+.install-prompt-detail span {
+  color: var(--color-subtle);
+}
+
+.install-prompt-detail strong {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.target-status-cell {
+  display: grid;
+  gap: 6px;
+  min-width: 140px;
+}
+
+.target-status-reason {
+  color: #b42318;
+  display: block;
+  font-size: 12px;
+  line-height: 18px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (max-width: 1100px) {
   .app-shell {
     grid-template-columns: 88px 1fr;
@@ -322,7 +404,8 @@ body {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .connection-grid,
-  .port-grid {
+  .port-grid,
+  .trace-form-grid {
     grid-template-columns: 1fr;
   }
   .console-page-header,

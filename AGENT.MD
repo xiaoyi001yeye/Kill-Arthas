@@ -2,7 +2,7 @@
 
 ## Rebuild And Restart Services
 
-When the user asks to rebuild services, restart services, or says "重新构建服务并重启", use the Docker Compose workflow from the repository root:
+When the user asks to rebuild services, restart services, says "重新构建服务并重启", or simply says "rebuild", treat it as a request to rebuild the Docker containers and restart the services. Use the Docker Compose workflow from the repository root:
 
 ```bash
 docker compose up -d --build

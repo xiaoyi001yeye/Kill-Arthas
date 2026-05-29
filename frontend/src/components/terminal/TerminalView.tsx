@@ -114,7 +114,11 @@ export const TerminalView = forwardRef<TerminalViewHandle, TerminalViewProps>(fu
 function writeToTerminal(terminal: XTerm, copyBufferRef: React.MutableRefObject<string>, content: string) {
   const normalized = content.replace(/\r?\n/g, '\r\n');
   terminal.write(normalized);
-  copyBufferRef.current = trimBuffer(copyBufferRef.current + content);
+  copyBufferRef.current = trimBuffer(copyBufferRef.current + stripAnsi(content));
+}
+
+function stripAnsi(value: string) {
+  return value.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
 }
 
 function trimBuffer(value: string) {

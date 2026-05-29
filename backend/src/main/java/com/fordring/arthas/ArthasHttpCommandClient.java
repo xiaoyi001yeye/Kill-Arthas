@@ -19,6 +19,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
@@ -28,6 +29,9 @@ public class ArthasHttpCommandClient {
     private static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(5);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(15);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(300);
+    private static final double TRACE_HOT_NODE_PERCENT = 80.0;
+    private static final String ANSI_RED = "\u001B[31m";
+    private static final String ANSI_RESET = "\u001B[0m";
 
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
@@ -194,30 +198,50 @@ public class ArthasHttpCommandClient {
     }
 
     private String arthasApiScript(AccessTarget target, String payload) {
-        var username = properties.arthas.username == null || properties.arthas.username.isBlank()
-                ? "arthas"
-                : properties.arthas.username;
-        var password = properties.arthas.password == null ? "" : properties.arthas.password;
+        var authorization = authorizationHeader();
         return """
                 set -e
                 HTTP_PORT=__HTTP_PORT__
-                ARTHAS_USERNAME=__ARTHAS_USERNAME__
-                ARTHAS_PASSWORD=__ARTHAS_PASSWORD__
                 PAYLOAD=__PAYLOAD__
-                if ! command -v curl >/dev/null 2>&1; then
-                  echo "CURL_MISSING"
-                  exit 21
+                AUTHORIZATION_HEADER=__AUTHORIZATION_HEADER__
+                FORDRING_HTTP_CLIENT_JAR=__FORDRING_HTTP_CLIENT_JAR__
+                ARTHAS_URL="http://127.0.0.1:$HTTP_PORT/api"
+                if command -v curl >/dev/null 2>&1; then
+                  if [ -n "$AUTHORIZATION_HEADER" ]; then
+                    curl -sS --connect-timeout 2 --max-time 15 -X POST "$ARTHAS_URL" -H 'Content-Type: application/json' -H "Authorization: $AUTHORIZATION_HEADER" -d "$PAYLOAD"
+                  else
+                    curl -sS --connect-timeout 2 --max-time 15 -X POST "$ARTHAS_URL" -H 'Content-Type: application/json' -d "$PAYLOAD"
+                  fi
+                  exit $?
                 fi
-                if [ -n "$ARTHAS_PASSWORD" ]; then
-                  curl -sS --connect-timeout 2 --max-time 15 -X POST "http://127.0.0.1:$HTTP_PORT/api" -H 'Content-Type: application/json' -u "$ARTHAS_USERNAME:$ARTHAS_PASSWORD" -d "$PAYLOAD"
-                else
-                  curl -sS --connect-timeout 2 --max-time 15 -X POST "http://127.0.0.1:$HTTP_PORT/api" -H 'Content-Type: application/json' -d "$PAYLOAD"
+                if command -v wget >/dev/null 2>&1; then
+                  if [ -n "$AUTHORIZATION_HEADER" ]; then
+                    wget -q -O - --timeout=15 --header='Content-Type: application/json' --header="Authorization: $AUTHORIZATION_HEADER" --post-data="$PAYLOAD" "$ARTHAS_URL"
+                  else
+                    wget -q -O - --timeout=15 --header='Content-Type: application/json' --post-data="$PAYLOAD" "$ARTHAS_URL"
+                  fi
+                  exit $?
                 fi
+                if [ -s "$FORDRING_HTTP_CLIENT_JAR" ]; then
+                  if ! command -v java >/dev/null 2>&1; then
+                    echo "JAVA_MISSING_FOR_HTTP_CLIENT"
+                    exit 22
+                  fi
+                  export FORDRING_ARTHAS_URL="$ARTHAS_URL"
+                  export FORDRING_ARTHAS_PAYLOAD="$PAYLOAD"
+                  export FORDRING_ARTHAS_AUTHORIZATION="$AUTHORIZATION_HEADER"
+                  export FORDRING_ARTHAS_CONNECT_TIMEOUT_MS=2000
+                  export FORDRING_ARTHAS_READ_TIMEOUT_MS=15000
+                  java -jar "$FORDRING_HTTP_CLIENT_JAR"
+                  exit $?
+                fi
+                echo "FORDRING_HTTP_CLIENT_MISSING"
+                exit 21
                 """
                 .replace("__HTTP_PORT__", target.httpPort.toString())
-                .replace("__ARTHAS_USERNAME__", TargetShellExecutor.shellQuote(username))
-                .replace("__ARTHAS_PASSWORD__", TargetShellExecutor.shellQuote(password))
-                .replace("__PAYLOAD__", TargetShellExecutor.shellQuote(payload));
+                .replace("__PAYLOAD__", TargetShellExecutor.shellQuote(payload))
+                .replace("__AUTHORIZATION_HEADER__", TargetShellExecutor.shellQuote(authorization == null ? "" : authorization))
+                .replace("__FORDRING_HTTP_CLIENT_JAR__", TargetShellExecutor.shellQuote(ArthasInstallationService.HTTP_CLIENT_JAR_TARGET_PATH));
     }
 
     private JsonNode parseResponse(String endpoint, String responseBody) throws IOException {
@@ -245,8 +269,11 @@ public class ArthasHttpCommandClient {
     }
 
     private String commandFailureMessage(TargetShellExecutor.ShellResult result) {
-        if (result.stdout().contains("CURL_MISSING")) {
-            return "目标环境未找到 curl，无法调用 Arthas HTTP API";
+        if (result.stdout().contains("FORDRING_HTTP_CLIENT_MISSING")) {
+            return "目标环境未找到 curl/wget，且未发现 Fordring Arthas HTTP Client，请重新执行“安装 Arthas”后再试";
+        }
+        if (result.stdout().contains("JAVA_MISSING_FOR_HTTP_CLIENT")) {
+            return "目标环境未找到 curl/wget，且无法用 java 执行 Fordring Arthas HTTP Client";
         }
         var output = result.stderr().isBlank() ? result.stdout() : result.stderr();
         return preview(output);
@@ -340,10 +367,44 @@ public class ArthasHttpCommandClient {
                     ? "[arthas] 命令执行完成，statusCode=0\n"
                     : "[arthas] 命令执行失败，statusCode=" + statusCode + optional("，", message) + "\n";
         }
+        if ("version".equals(type)) {
+            return formatVersion(result);
+        }
         if ("dashboard".equals(type)) {
             return formatDashboard(result);
         }
+        if ("thread".equals(type)) {
+            return formatThread(result);
+        }
+        if ("jvm".equals(type)) {
+            return formatJvm(result);
+        }
+        if ("memory".equals(type)) {
+            return formatMemory(result);
+        }
+        if ("enhancer".equals(type)) {
+            return formatEnhancer(result);
+        }
+        if ("trace".equals(type)) {
+            return formatTrace(result);
+        }
         return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(result) + "\n";
+    }
+
+    private String formatVersion(JsonNode result) {
+        var output = new StringBuilder();
+        output.append("Arthas Version\n");
+        var version = text(result, "version");
+        if (!"-".equals(version)) {
+            output.append("version  ").append(version).append("\n\n");
+            return output.toString();
+        }
+        var rows = keyValueRows(result);
+        if (!rows.isEmpty()) {
+            output.append(table(List.of("Name", "value"), rows)).append('\n');
+            return output.toString();
+        }
+        return objectMapper.valueToTree(result).toPrettyString() + "\n";
     }
 
     private String formatDashboard(JsonNode result) {
@@ -359,28 +420,486 @@ public class ArthasHttpCommandClient {
         return output.append('\n').toString();
     }
 
-    private void appendThreadTable(StringBuilder output, JsonNode threads) {
-        if (!threads.isArray() || threads.isEmpty()) {
+    private String formatThread(JsonNode result) {
+        var output = new StringBuilder();
+        output.append("Thread\n");
+        appendThreadSummary(output, firstPresent(result, "threadStateCount", "threadStates", "stateCount"));
+        appendThreadTable(output, firstPresent(result, "threadStats", "busyThreads", "threads", "threadInfos", "threadInfo"));
+        appendThreadDetails(output, firstPresent(result, "busyThreads"));
+        appendSingleThreadInfo(output, firstPresent(result, "threadInfo"));
+        appendBlockingLockInfo(output, firstPresent(result, "blockingLockInfo"));
+        return formattedOrJson(output, "Thread\n", result);
+    }
+
+    private String formatJvm(JsonNode result) {
+        var output = new StringBuilder();
+        output.append("JVM\n");
+        var jvmInfo = firstPresent(result, "jvmInfo", "infos", "info", "data");
+        appendJvmSection(output, "Runtime", result, jvmInfo, "runtimeInfo", "runtime", "RUNTIME");
+        appendJvmSection(output, "Class Loading", result, jvmInfo, "classLoadingInfo", "classLoading", "CLASS-LOADING");
+        appendJvmSection(output, "Compilation", result, jvmInfo, "compilationInfo", "compilation", "COMPILATION");
+        appendJvmSection(output, "Garbage Collectors", result, jvmInfo, "garbageCollectors", "garbageCollectorInfos", "gcInfo", "GARBAGE-COLLECTORS");
+        appendJvmSection(output, "Memory Managers", result, jvmInfo, "memoryManagers", "memoryManagerInfos", "MEMORY-MANAGERS");
+        appendJvmSection(output, "Memory", result, jvmInfo, "memoryInfo", "memory", "MEMORY");
+        appendJvmSection(output, "Operating System", result, jvmInfo, "operatingSystemInfo", "operatingSystem", "OPERATING-SYSTEM");
+        appendJvmSection(output, "Thread", result, jvmInfo, "threadInfo", "thread", "THREAD");
+        appendJvmSection(output, "File Descriptor", result, jvmInfo, "fileDescriptorInfo", "fileDescriptor", "FILE-DESCRIPTOR");
+        appendJvmSection(output, "System Properties", result, jvmInfo, "systemProperties", "SYSTEM-PROPERTIES");
+        appendJvmSection(output, "System Environment", result, jvmInfo, "systemEnvironment", "SYSTEM-ENVIRONMENT");
+        appendJvmSection(output, "Input Arguments", result, jvmInfo, "inputArguments", "INPUT-ARGUMENTS");
+        if (output.length() == "JVM\n".length()) {
+            appendKeyValueSection(output, "Details", result);
+        }
+        if (output.length() == "JVM\n".length()) {
+            output.append('\n').append("No JVM details returned\n");
+        }
+        return output.append('\n').toString();
+    }
+
+    private String formatMemory(JsonNode result) {
+        var output = new StringBuilder();
+        output.append("Memory\n");
+        appendMemoryTable(output, firstPresent(result, "memoryInfo", "memoryInfos", "memory"));
+        return formattedOrJson(output, "Memory\n", result);
+    }
+
+    private String formatEnhancer(JsonNode result) {
+        var effect = firstPresent(result, "effect");
+        var output = new StringBuilder();
+        output.append("[arthas] trace listener attached");
+        output.append(optional(", jobId=", text(result, "jobId")));
+        if (effect.isObject()) {
+            output.append(optional(", listenerId=", text(effect, "listenerId")));
+            output.append(optional(", classes=", text(effect, "classCount")));
+            output.append(optional(", methods=", text(effect, "methodCount")));
+            output.append(optional(", enhanceCost=", durationText(effect, "cost")));
+        }
+        output.append('\n');
+        return output.toString();
+    }
+
+    private String formatTrace(JsonNode result) {
+        var root = firstPresent(result, "root");
+        if (!root.isObject()) {
+            return objectMapper.valueToTree(result).toPrettyString() + "\n";
+        }
+
+        var output = new StringBuilder();
+        output.append("`---").append(traceThreadText(root)).append('\n');
+        appendTraceNode(output, root, "    ", true, traceNodeTotalCostNanos(root), false);
+        output.append('\n');
+        return output.toString();
+    }
+
+    private String traceThreadText(JsonNode root) {
+        return "ts=" + text(root, "ts", "timestamp", "timeStamp")
+                + ";thread_name=" + text(root, "threadName", "thread_name", "name")
+                + ";id=" + text(root, "threadId", "thread_id", "id")
+                + ";is_daemon=" + text(root, "isDaemon", "is_daemon", "daemon")
+                + ";priority=" + text(root, "priority")
+                + ";TCCL=" + traceClassLoaderText(root);
+    }
+
+    private String traceClassLoaderText(JsonNode root) {
+        var direct = firstPresent(root, "TCCL", "tccl", "contextClassLoader", "classLoader", "classLoaderName");
+        if (!direct.isMissingNode() && !direct.isNull()) {
+            return direct.isObject() ? compactObject(direct) : direct.asText("-");
+        }
+        var classLoaderHash = text(root, "classLoaderHash", "classloaderHash");
+        if ("-".equals(classLoaderHash)) {
+            return "-";
+        }
+        var classLoaderClass = text(root, "classLoaderClass", "classloaderClass");
+        return "-".equals(classLoaderClass) ? classLoaderHash : classLoaderClass + "@" + classLoaderHash;
+    }
+
+    private void appendTraceNode(StringBuilder output, JsonNode node, String prefix, boolean last,
+                                 double rootCostNanos, boolean includePercent) {
+        var children = firstPresent(node, "children");
+        output.append(prefix)
+                .append(last ? "`---" : "+---")
+                .append(traceCostBlock(node, rootCostNanos, includePercent))
+                .append(' ')
+                .append(traceMethodText(node))
+                .append('\n');
+
+        if (!children.isArray() || children.isEmpty()) {
+            return;
+        }
+        var nextPrefix = prefix + (last ? "    " : "|   ");
+        for (var index = 0; index < children.size(); index++) {
+            appendTraceNode(output, children.get(index), nextPrefix, index == children.size() - 1,
+                    rootCostNanos, true);
+        }
+    }
+
+    private String traceMethodText(JsonNode node) {
+        var className = text(node, "className");
+        var methodName = text(node, "methodName");
+        var lineNumber = text(node, "lineNumber");
+        var location = "-".equals(lineNumber) || "-1".equals(lineNumber) ? "" : " #" + lineNumber;
+        return className + ":" + methodName + "()" + location;
+    }
+
+    private String traceCostBlock(JsonNode node, double rootCostNanos, boolean includePercent) {
+        var costNanos = traceNodeTotalCostNanos(node);
+        var cost = traceCostDisplay(node);
+        if (!includePercent || rootCostNanos <= 0 || costNanos < 0) {
+            return "[" + cost + "]";
+        }
+        var percent = costNanos / rootCostNanos * 100;
+        var value = String.format(Locale.ROOT, "[%.2f%% %s]", percent, cost);
+        return percent >= TRACE_HOT_NODE_PERCENT ? ANSI_RED + value + ANSI_RESET : value;
+    }
+
+    private String traceCostDisplay(JsonNode node) {
+        var count = traceCountText(node);
+        if (!"-".equals(count) && !"1".equals(count) && hasAnyNumber(node, "minCost", "maxCost", "totalCost", "total")) {
+            return "min=" + traceCostText(node, "minCost")
+                    + ",max=" + traceCostText(node, "maxCost")
+                    + ",total=" + traceCostText(node, "totalCost", "total")
+                    + ",count=" + count;
+        }
+        return traceCostText(node, "cost", "totalCost", "total");
+    }
+
+    private String traceCountText(JsonNode node) {
+        return text(node, "count", "times");
+    }
+
+    private boolean hasAnyNumber(JsonNode node, String... fields) {
+        for (var field : fields) {
+            if (firstPresent(node, field).isNumber()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private double traceNodeTotalCostNanos(JsonNode node) {
+        var value = firstPresent(node, "totalCost", "total", "cost");
+        return value.isNumber() ? value.asDouble() : -1;
+    }
+
+    private String traceCostText(JsonNode node, String... fields) {
+        var value = firstPresent(node, fields);
+        if (!value.isNumber()) {
+            return text(node, fields);
+        }
+        return String.format(Locale.ROOT, "%.6fms", value.asDouble() / 1_000_000.0);
+    }
+
+    private String formattedOrJson(StringBuilder output, String emptyValue, JsonNode result) {
+        if (output.length() == emptyValue.length()) {
+            return objectMapper.valueToTree(result).toPrettyString() + "\n";
+        }
+        return output.append('\n').toString();
+    }
+
+    private void appendThreadSummary(StringBuilder output, JsonNode stateCount) {
+        if (!stateCount.isObject() || stateCount.isEmpty()) {
             return;
         }
         var rows = new ArrayList<List<String>>();
+        var total = 0;
+        stateCount.fields().forEachRemaining((entry) -> rows.add(List.of(entry.getKey(), entry.getValue().asText())));
+        for (var row : rows) {
+            try {
+                total += Integer.parseInt(row.get(1));
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        output.append('\n');
+        if (total > 0) {
+            output.append("Threads Total: ").append(total).append('\n');
+        }
+        output.append(table(List.of("State", "count"), rows));
+    }
+
+    private void appendThreadDetails(StringBuilder output, JsonNode threads) {
+        if (!threads.isArray() || threads.isEmpty()) {
+            return;
+        }
+        var detail = new StringBuilder();
         for (var thread : threads) {
-            rows.add(List.of(
-                    text(thread, "id", "threadId"),
-                    text(thread, "name", "threadName"),
-                    text(thread, "group", "groupName"),
-                    text(thread, "priority"),
-                    text(thread, "state", "threadState"),
-                    percentText(thread, "cpu", "cpuUsage"),
-                    text(thread, "deltaTime", "deltaTimeMillis"),
-                    text(thread, "time", "cpuTime"),
-                    text(thread, "interrupted"),
-                    text(thread, "daemon")
-            ));
+            var stackTrace = firstPresent(thread, "stackTrace", "stackTraces");
+            if (!stackTrace.isArray() || stackTrace.isEmpty()) {
+                continue;
+            }
+            detail.append('\n')
+                    .append('"').append(text(thread, "name", "threadName")).append('"')
+                    .append(" Id=").append(text(thread, "id", "threadId"))
+                    .append(' ').append(text(thread, "state", "threadState"))
+                    .append(optional(" cpuUsage=", percentText(thread, "cpu", "cpuUsage")))
+                    .append('\n');
+            appendStackTrace(detail, stackTrace);
+        }
+        if (!detail.isEmpty()) {
+            output.append(detail);
+        }
+    }
+
+    private void appendSingleThreadInfo(StringBuilder output, JsonNode threadInfo) {
+        if (!threadInfo.isObject() || threadInfo.isEmpty()) {
+            return;
+        }
+        output.append('\n')
+                .append('"').append(text(threadInfo, "threadName", "name")).append('"')
+                .append(" Id=").append(text(threadInfo, "threadId", "id"))
+                .append(' ').append(text(threadInfo, "threadState", "state"))
+                .append(optional(" on ", text(threadInfo, "lockName")))
+                .append('\n');
+        appendStackTrace(output, firstPresent(threadInfo, "stackTrace", "stackTraces"));
+    }
+
+    private void appendBlockingLockInfo(StringBuilder output, JsonNode blockingLockInfo) {
+        if (!blockingLockInfo.isObject() || blockingLockInfo.isEmpty()) {
+            return;
+        }
+        output.append('\n').append("Blocking Thread\n");
+        appendKeyValueSection(output, "Lock", blockingLockInfo);
+    }
+
+    private void appendThreadTable(StringBuilder output, JsonNode threads) {
+        var rows = threadRows(threads);
+        if (rows.isEmpty()) {
+            return;
         }
         output.append('\n').append(table(List.of(
                 "ID", "NAME", "GROUP", "PRIORITY", "STATE", "%CPU", "DELTA_TIME", "TIME", "INTERRUPTED", "DAEMON"
         ), rows));
+    }
+
+    private List<List<String>> threadRows(JsonNode threads) {
+        var rows = new ArrayList<List<String>>();
+        if (threads.isArray()) {
+            for (var thread : threads) {
+                rows.add(threadRow(thread));
+            }
+        } else if (threads.isObject() && !threads.isEmpty()) {
+            rows.add(threadRow(threads));
+        }
+        return rows;
+    }
+
+    private List<String> threadRow(JsonNode thread) {
+        return List.of(
+                text(thread, "id", "threadId"),
+                text(thread, "name", "threadName"),
+                text(thread, "group", "groupName", "threadGroupName"),
+                text(thread, "priority"),
+                text(thread, "state", "threadState"),
+                percentText(thread, "cpu", "cpuUsage"),
+                durationText(thread, "deltaTime", "deltaTimeMillis"),
+                durationText(thread, "time", "cpuTime"),
+                text(thread, "interrupted"),
+                text(thread, "daemon")
+        );
+    }
+
+    private void appendStackTrace(StringBuilder output, JsonNode stackTrace) {
+        if (!stackTrace.isArray() || stackTrace.isEmpty()) {
+            return;
+        }
+        for (var frame : stackTrace) {
+            if (frame.isObject()) {
+                output.append("    at ")
+                        .append(text(frame, "className", "declaringClass"))
+                        .append('.')
+                        .append(text(frame, "methodName", "method"))
+                        .append('(')
+                        .append(stackFrameLocation(frame))
+                        .append(")\n");
+            } else {
+                output.append("    at ").append(frame.asText()).append('\n');
+            }
+        }
+    }
+
+    private String stackFrameLocation(JsonNode frame) {
+        var fileName = text(frame, "fileName", "file");
+        var lineNumber = text(frame, "lineNumber", "line");
+        if ("-".equals(fileName)) {
+            return "-".equals(lineNumber) ? "Unknown Source" : "Unknown Source:" + lineNumber;
+        }
+        return "-".equals(lineNumber) ? fileName : fileName + ":" + lineNumber;
+    }
+
+    private void appendKeyValueSection(StringBuilder output, String title, JsonNode value) {
+        var rows = keyValueRows(value);
+        if (rows.isEmpty()) {
+            return;
+        }
+        output.append('\n').append(title).append('\n').append(table(List.of("Name", "value"), rows));
+    }
+
+    private void appendJvmSection(StringBuilder output, String title, JsonNode result, JsonNode jvmInfo, String... fields) {
+        appendKeyValueSection(output, title, firstJvmGroup(result, jvmInfo, fields));
+    }
+
+    private JsonNode firstJvmGroup(JsonNode result, JsonNode jvmInfo, String... fields) {
+        var value = firstPresent(result, fields);
+        if (!value.isMissingNode() && !value.isNull()) {
+            return value;
+        }
+        if (jvmInfo.isObject()) {
+            for (var field : fields) {
+                var direct = jvmInfo.path(field);
+                if (!direct.isMissingNode() && !direct.isNull()) {
+                    return direct;
+                }
+                var normalizedField = normalizeJvmGroup(field);
+                var iterator = jvmInfo.fields();
+                while (iterator.hasNext()) {
+                    var entry = iterator.next();
+                    if (normalizeJvmGroup(entry.getKey()).equals(normalizedField)) {
+                        return entry.getValue();
+                    }
+                }
+            }
+        }
+        if (jvmInfo.isArray()) {
+            var rows = objectMapper.createArrayNode();
+            for (var item : jvmInfo) {
+                var group = text(item, "group", "section", "category");
+                for (var field : fields) {
+                    if (normalizeJvmGroup(group).equals(normalizeJvmGroup(field))) {
+                        rows.add(item);
+                        break;
+                    }
+                }
+            }
+            if (!rows.isEmpty()) {
+                return rows;
+            }
+        }
+        return objectMapper.missingNode();
+    }
+
+    private String normalizeJvmGroup(String value) {
+        return valueOrDash(value).replaceAll("[^A-Za-z0-9]", "").toLowerCase();
+    }
+
+    private List<List<String>> keyValueRows(JsonNode value) {
+        var rows = new ArrayList<List<String>>();
+        if (value.isObject()) {
+            value.fields().forEachRemaining((entry) -> {
+                if (ignoreKeyValueField(entry.getKey())) {
+                    return;
+                }
+                if (entry.getValue().isObject()) {
+                    rows.add(List.of(entry.getKey(), compactObject(entry.getValue())));
+                } else if (entry.getValue().isArray()) {
+                    appendArrayRows(rows, entry.getKey(), entry.getValue());
+                } else {
+                    rows.add(List.of(entry.getKey(), scalarText(entry.getValue())));
+                }
+            });
+        } else if (value.isArray()) {
+            appendArrayRows(rows, "-", value);
+        }
+        return rows;
+    }
+
+    private boolean ignoreKeyValueField(String field) {
+        return "type".equals(field) || "jobId".equals(field) || "group".equals(field)
+                || "section".equals(field) || "category".equals(field);
+    }
+
+    private void appendArrayRows(List<List<String>> rows, String prefix, JsonNode values) {
+        for (var index = 0; index < values.size(); index++) {
+            var value = values.get(index);
+            var name = text(value, "name", "managerName", "gcName", "memoryManagerName");
+            if ("-".equals(name)) {
+                name = "-".equals(prefix) ? String.valueOf(index + 1) : prefix + "[" + index + "]";
+            }
+            rows.add(List.of(name, value.isObject() ? compactObject(value) : scalarText(value)));
+        }
+    }
+
+    private String compactObject(JsonNode value) {
+        var directValue = firstPresent(value, "value");
+        if (!directValue.isMissingNode() && !directValue.isNull()) {
+            if (directValue.isObject()) {
+                return compactObject(directValue);
+            }
+            if (directValue.isArray()) {
+                return arrayText(directValue);
+            }
+            return scalarText(directValue);
+        }
+        var parts = new ArrayList<String>();
+        value.fields().forEachRemaining((entry) -> {
+            if (ignoreKeyValueField(entry.getKey()) || "name".equals(entry.getKey())) {
+                return;
+            }
+            parts.add(entry.getKey() + "=" + scalarText(entry.getValue()));
+        });
+        if (parts.isEmpty()) {
+            var name = text(value, "name", "managerName", "gcName", "memoryManagerName");
+            return "-".equals(name) ? "-" : name;
+        }
+        return String.join(", ", parts);
+    }
+
+    private String scalarText(JsonNode value) {
+        if (value == null || value.isMissingNode() || value.isNull()) {
+            return "-";
+        }
+        if (value.isIntegralNumber()) {
+            return String.valueOf(value.asLong());
+        }
+        if (value.isNumber() || value.isBoolean() || value.isTextual()) {
+            return value.asText();
+        }
+        if (value.isArray()) {
+            return arrayText(value);
+        }
+        if (value.isObject()) {
+            return compactObject(value);
+        }
+        return value.asText("-");
+    }
+
+    private String arrayText(JsonNode values) {
+        if (!values.isArray() || values.isEmpty()) {
+            return "-";
+        }
+        var parts = new ArrayList<String>();
+        for (var value : values) {
+            parts.add(value.isObject() ? compactObject(value) : scalarText(value));
+        }
+        return String.join(", ", parts);
+    }
+
+    private String durationText(JsonNode node, String... fields) {
+        var value = firstPresent(node, fields);
+        if (!value.isIntegralNumber()) {
+            return text(node, fields);
+        }
+        var millis = value.asLong();
+        if (millis < 1000) {
+            return millis + "ms";
+        }
+        return String.format("%.3fs", millis / 1000.0);
+    }
+
+    private void appendMemoryRows(ArrayList<List<String>> rows, String group, JsonNode memoryInfo) {
+        if (memoryInfo.isArray()) {
+            for (var memory : memoryInfo) {
+                rows.add(memoryRow(memoryName(group, memory), memory));
+            }
+        } else if (memoryInfo.isObject()) {
+            rows.add(memoryRow(group, memoryInfo));
+        }
+    }
+
+    private String memoryName(String group, JsonNode memory) {
+        var name = text(memory, "name", "pool", "memory");
+        if ("-".equals(name)) {
+            return valueOrDash(group);
+        }
+        return "-".equals(valueOrDash(group)) || group.equals(name) ? name : group + "/" + name;
     }
 
     private void appendMemoryTable(StringBuilder output, JsonNode memoryInfo) {
@@ -391,9 +910,7 @@ public class ArthasHttpCommandClient {
             }
         } else if (memoryInfo.isObject()) {
             memoryInfo.fields().forEachRemaining((entry) -> {
-                if (entry.getValue().isObject()) {
-                    rows.add(memoryRow(entry.getKey(), entry.getValue()));
-                }
+                appendMemoryRows(rows, entry.getKey(), entry.getValue());
             });
         }
         if (rows.isEmpty()) {
@@ -408,7 +925,7 @@ public class ArthasHttpCommandClient {
                 sizeText(memory, "used"),
                 sizeText(memory, "total", "committed", "capacity"),
                 sizeText(memory, "max"),
-                usageText(memory, "usage")
+                memoryUsageText(memory)
         );
     }
 
@@ -493,6 +1010,21 @@ public class ArthasHttpCommandClient {
         return String.format("%.2f", value.asDouble());
     }
 
+    private String memoryUsageText(JsonNode node) {
+        var usage = firstPresent(node, "usage");
+        if (usage.isNumber()) {
+            return usageText(node, "usage");
+        }
+        var used = firstPresent(node, "used");
+        var max = firstPresent(node, "max");
+        var total = firstPresent(node, "total", "committed", "capacity");
+        var denominator = max.isIntegralNumber() && max.asLong() > 0 ? max : total;
+        if (!used.isIntegralNumber() || !denominator.isIntegralNumber() || denominator.asLong() <= 0) {
+            return "-";
+        }
+        return String.format("%.2f%%", used.asDouble() / denominator.asDouble() * 100);
+    }
+
     private String table(List<String> headers, List<List<String>> rows) {
         var widths = new int[headers.size()];
         for (var index = 0; index < headers.size(); index++) {
@@ -531,7 +1063,7 @@ public class ArthasHttpCommandClient {
 
     private String humanBytes(long bytes) {
         if (bytes < 0) {
-            return String.valueOf(bytes);
+            return "-";
         }
         var units = List.of("B", "K", "M", "G", "T");
         var value = (double) bytes;
@@ -568,6 +1100,6 @@ public class ArthasHttpCommandClient {
     }
 
     private String optional(String prefix, String value) {
-        return value == null || value.isBlank() ? "" : prefix + value;
+        return value == null || value.isBlank() || "-".equals(value) ? "" : prefix + value;
     }
 }

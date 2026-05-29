@@ -68,7 +68,8 @@ public class AccessTargetController {
                                                HttpServletRequest servletRequest) {
         var telnetPort = request == null ? null : request.telnetPort();
         var httpPort = request == null ? null : request.httpPort();
-        return ApiResponse.ok(service.attach(id, telnetPort, httpPort, operatorContext.currentOperator(servletRequest)));
+        var forceRestart = request == null ? null : request.forceRestart();
+        return ApiResponse.ok(service.attach(id, telnetPort, httpPort, forceRestart, operatorContext.currentOperator(servletRequest)));
     }
 
     @PostMapping("/{id}/detach")

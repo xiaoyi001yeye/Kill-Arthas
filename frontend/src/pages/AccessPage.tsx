@@ -1,5 +1,5 @@
 import { Alert, Button, Collapse, Form, Input, InputNumber, message, Modal, Radio, Select, Space, Table } from 'antd';
-import { CheckCircle, Clock3, Cuboid, Download, Edit3, PackageCheck, Plus, Search, Trash2 } from 'lucide-react';
+import { CheckCircle, Clock3, Copy, Cuboid, Download, Edit3, PackageCheck, Plus, Search, Trash2 } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { useState, type ReactNode } from 'react';
@@ -10,16 +10,24 @@ import { TargetStatusTag } from '../ui/StatusTag';
 type Stats = { totalCount: number; attachedCount: number; pendingCount: number; failedCount: number };
 type JavaProcessDiscoveryResult = { processes: { processId: number; processName: string }[] };
 type ArthasInstallationResult = { installed: boolean; message: string; version: string; traceId: string; outputPreview: string };
+type ArthasInstallPrompt = { target: AccessTarget; message: string; failureMessage?: string };
+type ArthasPromptAction = 'install' | 'install-and-attach';
 
 export default function AccessPage() {
   const [form] = Form.useForm();
   const [modal, contextHolder] = Modal.useModal();
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingTarget, setEditingTarget] = useState<AccessTarget>();
+  const [arthasInstallPrompt, setArthasInstallPrompt] = useState<ArthasInstallPrompt>();
+  const [arthasPromptAction, setArthasPromptAction] = useState<ArthasPromptAction>();
   const queryClient = useQueryClient();
   const closeEditor = () => {
     setEditorOpen(false);
     setEditingTarget(undefined);
+  };
+  const refreshAccessTargets = async () => {
+    await queryClient.invalidateQueries({ queryKey: ['access-targets'] });
+    await queryClient.invalidateQueries({ queryKey: ['access-stats'] });
   };
   const stats = useQuery({ queryKey: ['access-stats'], queryFn: () => unwrap<Stats>(api.get('/api/access-targets/stats')) });
   const targets = useQuery({
@@ -44,12 +52,24 @@ export default function AccessPage() {
       closeEditor();
     }
   });
-  const attach = useMutation({
-    mutationFn: (id: number) => unwrap<AccessTarget>(api.post(`/api/access-targets/${id}/attach`, { telnetPort: 3658, httpPort: 8563 })),
+  const attach = useMutation<AccessTarget, Error, AccessTarget>({
+    mutationFn: (target) => unwrap<AccessTarget>(api.post(`/api/access-targets/${target.id}/attach`, {
+      telnetPort: 3658,
+      httpPort: 8563,
+      forceRestart: target.arthasStatus === 'DISCONNECTED' || target.arthasStatus === 'ATTACH_FAILED'
+    })),
     onSuccess: async () => {
       message.success('Arthas 已接入');
-      await queryClient.invalidateQueries({ queryKey: ['access-targets'] });
-      await queryClient.invalidateQueries({ queryKey: ['access-stats'] });
+      await refreshAccessTargets();
+    },
+    onError: async (error, target) => {
+      await refreshAccessTargets();
+      const errorMessage = getErrorMessage(error, '接入 Arthas 失败');
+      if (isMissingArthasBoot(errorMessage)) {
+        setArthasInstallPrompt({ target, message: errorMessage });
+        return;
+      }
+      message.error(errorMessage);
     }
   });
   const detach = useMutation({
@@ -85,8 +105,9 @@ export default function AccessPage() {
   });
   const installArthas = useMutation({
     mutationFn: (id: number) => unwrap<ArthasInstallationResult>(api.post(`/api/access-targets/${id}/arthas/install`)),
-    onSuccess: (result) => {
+    onSuccess: async (result) => {
       message.success(`${result.message}，版本：${result.version || '未知'}`);
+      await refreshAccessTargets();
     },
     onError: (error) => {
       message.error(error instanceof Error ? error.message : '安装 Arthas 失败');
@@ -98,7 +119,6 @@ export default function AccessPage() {
     setEditingTarget(target);
     form.setFieldsValue(target ? {
       name: target.name,
-      environment: target.environment,
       host: target.host,
       sshPort: target.sshPort ?? 22,
       authType: target.authType,
@@ -109,8 +129,7 @@ export default function AccessPage() {
       telnetPort: target.telnetPort,
       httpPort: target.httpPort
     } : {
-      name: '生产环境',
-      environment: 'prod',
+      name: 'order-service',
       host: '10.0.0.1',
       sshPort: 22,
       authType: 'PASSWORD',
@@ -159,9 +178,102 @@ export default function AccessPage() {
     });
   };
 
+  const runPromptInstall = async (attachAfterInstall: boolean) => {
+    if (!arthasInstallPrompt) {
+      return;
+    }
+    const target = arthasInstallPrompt.target;
+    setArthasPromptAction(attachAfterInstall ? 'install-and-attach' : 'install');
+    try {
+      await unwrap<ArthasInstallationResult>(api.post(`/api/access-targets/${target.id}/arthas/install`));
+      if (attachAfterInstall) {
+        await unwrap<AccessTarget>(api.post(`/api/access-targets/${target.id}/attach`, { telnetPort: 3658, httpPort: 8563 }));
+        message.success('Arthas 已安装并接入');
+      } else {
+        message.success('Arthas 安装完成');
+      }
+      setArthasInstallPrompt(undefined);
+      await refreshAccessTargets();
+    } catch (error) {
+      const errorMessage = getErrorMessage(error, attachAfterInstall ? '安装并接入失败' : '安装 Arthas 失败');
+      setArthasInstallPrompt({ target, message: arthasInstallPrompt.message, failureMessage: errorMessage });
+      await refreshAccessTargets();
+    } finally {
+      setArthasPromptAction(undefined);
+    }
+  };
+
+  const copyPromptDiagnostics = async () => {
+    if (!arthasInstallPrompt) {
+      return;
+    }
+    const target = arthasInstallPrompt.target;
+    await navigator.clipboard.writeText([
+      `targetId=${target.id}`,
+      `name=${target.name}`,
+      `host=${target.host}:${target.sshPort ?? 22}`,
+      target.containerName ? `container=${target.containerName}` : undefined,
+      target.processId ? `pid=${target.processId}` : undefined,
+      `message=${arthasInstallPrompt.failureMessage ?? arthasInstallPrompt.message}`
+    ].filter(Boolean).join('\n'));
+    message.success('已复制排障信息');
+  };
+
   return (
     <>
       {contextHolder}
+      <Modal
+        title="目标未安装 Arthas"
+        open={!!arthasInstallPrompt}
+        width={600}
+        destroyOnClose
+        onCancel={() => setArthasInstallPrompt(undefined)}
+        footer={[
+          arthasInstallPrompt?.failureMessage && (
+            <Button key="copy" icon={<Copy size={16} />} onClick={copyPromptDiagnostics}>
+              复制排障信息
+            </Button>
+          ),
+          <Button key="cancel" disabled={!!arthasPromptAction} onClick={() => setArthasInstallPrompt(undefined)}>
+            取消
+          </Button>,
+          <Button
+            key="install"
+            loading={arthasPromptAction === 'install'}
+            disabled={arthasPromptAction === 'install-and-attach'}
+            onClick={() => runPromptInstall(false)}
+          >
+            仅安装
+          </Button>,
+          <Button
+            key="install-and-attach"
+            type="primary"
+            loading={arthasPromptAction === 'install-and-attach'}
+            disabled={arthasPromptAction === 'install'}
+            onClick={() => runPromptInstall(true)}
+          >
+            安装并接入
+          </Button>
+        ]}
+      >
+        {arthasInstallPrompt && (
+          <>
+            <Alert
+              type={arthasInstallPrompt.failureMessage ? 'error' : 'warning'}
+              showIcon
+              message={arthasInstallPrompt.failureMessage ? '操作失败' : '当前目标缺少 arthas-boot.jar'}
+              description={arthasInstallPrompt.failureMessage ?? '当前目标缺少 ~/.arthas/arthas-boot.jar，因此无法接入 Arthas。可以先安装 Arthas，安装完成后继续接入。'}
+            />
+            <div className="install-prompt-detail">
+              <span>目标</span><strong>{arthasInstallPrompt.target.name}</strong>
+              <span>主机</span><strong>{arthasInstallPrompt.target.host}:{arthasInstallPrompt.target.sshPort ?? 22}</strong>
+              <span>容器</span><strong>{arthasInstallPrompt.target.containerName || '-'}</strong>
+              <span>PID</span><strong>{arthasInstallPrompt.target.processId || '-'}</strong>
+              <span>原因</span><strong>{arthasInstallPrompt.message}</strong>
+            </div>
+          </>
+        )}
+      </Modal>
       <Modal
         title={editingTarget ? '编辑接入' : '新增接入'}
         open={editorOpen}
@@ -302,7 +414,7 @@ export default function AccessPage() {
       </Modal>
       <div className="page-header">
         <h1>接入管理</h1>
-        <p>统一管理需要接入 Arthas 的环境与 Docker 容器</p>
+        <p>统一管理需要接入 Arthas 的主机与 Docker 容器</p>
       </div>
       <div className="stat-grid">
         <Metric icon={<Cuboid />} label="总接入数" value={stats.data?.totalCount ?? 0} />
@@ -327,11 +439,22 @@ export default function AccessPage() {
           pagination={{ pageSize: 10, total: targets.data?.total ?? 0 }}
           columns={[
             { title: '名称', dataIndex: 'name' },
-            { title: '环境', render: (_, row) => row.environment || '-' },
             { title: '主机', dataIndex: 'host' },
             { title: '目标类型', render: (_, row) => row.targetType === 'DOCKER_CONTAINER' ? 'Docker 容器' : '物理机 Java' },
             { title: '目标', render: (_, row) => row.processId ? `PID ${row.processId}` : '-' },
-            { title: 'Arthas状态', render: (_, row) => <TargetStatusTag status={row.arthasStatus} /> },
+            {
+              title: 'Arthas状态',
+              render: (_, row) => (
+                <div className="target-status-cell">
+                  <TargetStatusTag status={row.arthasStatus} />
+                  {row.latestFailureReason && (
+                    <span className="target-status-reason" title={row.latestFailureReason}>
+                      {row.latestFailureReason}
+                    </span>
+                  )}
+                </div>
+              )
+            },
             { title: '最近操作时间', dataIndex: 'latestOperationTime' },
             {
               title: '操作',
@@ -355,8 +478,8 @@ export default function AccessPage() {
                     安装 Arthas
                   </Button>
                   {row.arthasStatus === 'ATTACHED'
-                    ? <><Link to={`/console/${row.id}`}>进入 {row.environment || row.name} 控制台</Link><Button type="link" danger onClick={() => detach.mutate(row.id)}>断开</Button></>
-                    : <Button type="link" onClick={() => attach.mutate(row.id)}>接入 Arthas</Button>}
+                    ? <><Link to={`/console/${row.id}`}>进入 {row.name} 控制台</Link><Button type="link" danger onClick={() => detach.mutate(row.id)}>断开</Button></>
+                    : <Button type="link" loading={attach.isPending} onClick={() => attach.mutate(row)}>{row.arthasStatus === 'DISCONNECTED' || row.arthasStatus === 'ATTACH_FAILED' ? '重新接入 Arthas' : '接入 Arthas'}</Button>}
                   <Button type="link" danger icon={<Trash2 size={14} />} loading={deleteTarget.isPending} onClick={() => confirmDelete(row)}>删除</Button>
                 </>
               )
@@ -370,4 +493,14 @@ export default function AccessPage() {
 
 function Metric({ icon, label, value }: { icon: ReactNode; label: string; value: number }) {
   return <div className="stat-card"><div className="stat-icon">{icon}</div><div><span>{label}</span><strong>{value}</strong></div></div>;
+}
+
+function getErrorMessage(error: unknown, fallback: string) {
+  return error instanceof Error && error.message ? error.message : fallback;
+}
+
+function isMissingArthasBoot(message: string) {
+  return message.includes('arthas-boot.jar')
+    || message.includes('请先安装 Arthas')
+    || message.includes('ARTHAS_BOOT_MISSING');
 }

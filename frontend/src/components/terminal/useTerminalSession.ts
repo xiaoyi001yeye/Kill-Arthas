@@ -1,6 +1,7 @@
 import { RefObject, useCallback, useEffect, useRef, useState } from 'react';
 import { wsBaseUrl } from '../../api';
 import type { TerminalViewHandle } from './TerminalView';
+import type { CommandSource } from '../../types';
 
 type UseTerminalSessionOptions = {
   enabled: boolean;
@@ -10,6 +11,8 @@ type UseTerminalSessionOptions = {
 
 type ExecuteOptions = {
   command: string;
+  riskConfirmed?: boolean;
+  source?: CommandSource;
   timeoutSeconds?: number;
 };
 
@@ -64,19 +67,22 @@ export function useTerminalSession({ enabled, targetId, terminalRef }: UseTermin
     };
   }, [enabled, targetId, terminalRef]);
 
-  const execute = useCallback(({ command, timeoutSeconds = 30 }: ExecuteOptions) => {
+  const execute = useCallback(({ command, riskConfirmed = false, source = 'MANUAL', timeoutSeconds }: ExecuteOptions) => {
     if (targetId === undefined || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       return false;
     }
-    wsRef.current.send(JSON.stringify({
+    const payload: Record<string, unknown> = {
       type: 'EXECUTE_COMMAND',
       requestId: crypto.randomUUID(),
       targetId,
+      source,
       command,
-      timeoutSeconds,
-      source: 'MANUAL',
-      riskConfirmed: true
-    }));
+      riskConfirmed
+    };
+    if (timeoutSeconds !== undefined) {
+      payload.timeoutSeconds = timeoutSeconds;
+    }
+    wsRef.current.send(JSON.stringify(payload));
     return true;
   }, [targetId]);
 

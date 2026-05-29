@@ -9,6 +9,7 @@ import com.fordring.config.FordringProperties;
 import com.fordring.target.AccessTarget;
 import com.fordring.target.AccessTargetService;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -86,7 +87,8 @@ public class CommandService {
     }
 
     public PageResult<CommandExecutionDto> list(String keyword, int page, int pageSize) {
-        var pageable = PageRequest.of(Math.max(page - 1, 0), pageSize);
+        var pageable = PageRequest.of(Math.max(page - 1, 0), pageSize,
+                Sort.by(Sort.Direction.DESC, "executedAt"));
         var result = keyword == null || keyword.isBlank()
                 ? executionRepository.findAll(pageable)
                 : executionRepository.findByCommandContainingIgnoreCase(keyword, pageable);
@@ -109,14 +111,14 @@ public class CommandService {
         return new OutputResult(id, chunks, next, execution.outputTruncated);
     }
 
-    @Transactional
-    public CommandExecution rerun(Long id, ExecuteRequest override, String operatorName) {
+    @Transactional(readOnly = true)
+    public ExecuteRequest rerunRequest(Long id, ExecuteRequest override) {
         var origin = executionRepository.findById(id).orElseThrow(() -> new IllegalArgumentException("命令记录不存在"));
-        return createExecution(new ExecuteRequest(
+        return new ExecuteRequest(
                 override.targetId() == null ? origin.targetId : override.targetId(),
                 override.command() == null ? origin.command : override.command(),
                 override.timeoutSeconds(), CommandSource.RERUN, override.riskConfirmed(), true
-        ), operatorName);
+        );
     }
 
     @Transactional

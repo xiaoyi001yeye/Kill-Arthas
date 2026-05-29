@@ -14,6 +14,7 @@ import org.springframework.stereotype.Component;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 
@@ -45,6 +46,24 @@ public class TargetShellExecutor {
                 var stdout = IOUtils.readFully(remoteCommand.getInputStream()).toString(StandardCharsets.UTF_8);
                 var stderr = IOUtils.readFully(remoteCommand.getErrorStream()).toString(StandardCharsets.UTF_8);
                 return new ShellResult(stdout, stderr, remoteCommand.getExitStatus());
+            }
+        }
+    }
+
+    public void upload(String traceId, AccessTarget target, Path localFile, String remotePath) throws IOException {
+        var secret = credentialService.reveal(target.credentialId);
+        if (secret == null || secret.isBlank()) {
+            throw new IllegalArgumentException("目标缺少 SSH 凭据");
+        }
+        try (var ssh = new SSHClient()) {
+            ssh.addHostKeyVerifier(new PromiscuousVerifier());
+            log.info("Target shell SSH upload connecting traceId={} host={} sshPort={} remotePath={}",
+                    traceId, target.host, target.sshPort, remotePath);
+            ssh.connect(target.host, target.sshPort);
+            authenticate(ssh, target.username, target.authType, secret);
+            log.info("Target shell SSH upload authenticated traceId={} username={} authType={}", traceId, target.username, target.authType);
+            try (var sftp = ssh.newSFTPClient()) {
+                sftp.put(localFile.toString(), remotePath);
             }
         }
     }

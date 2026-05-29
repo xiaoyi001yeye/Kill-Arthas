@@ -66,6 +66,37 @@
     <build>
         <plugins>
             <plugin>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <version>3.1.0</version>
+                <executions>
+                    <execution>
+                        <id>build-arthas-http-client-tool</id>
+                        <phase>generate-resources</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <target>
+                                <mkdir dir="${project.build.directory}/arthas-http-client-classes"/>
+                                <mkdir dir="${project.build.outputDirectory}/tools"/>
+                                <javac
+                                        srcdir="${project.basedir}/arthas-http-client/src/main/java"
+                                        destdir="${project.build.directory}/arthas-http-client-classes"
+                                        includeantruntime="false"
+                                        release="11"/>
+                                <jar
+                                        destfile="${project.build.outputDirectory}/tools/fordring-arthas-http-client.jar"
+                                        basedir="${project.build.directory}/arthas-http-client-classes">
+                                    <manifest>
+                                        <attribute name="Main-Class" value="com.fordring.tools.ArthasHttpClient"/>
+                                    </manifest>
+                                </jar>
+                            </target>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
             </plugin>

@@ -10,11 +10,14 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/commands")
 public class CommandController {
     private final CommandService commandService;
+    private final CommandExecutionRunner commandExecutionRunner;
     private final RiskService riskService;
     private final OperatorContext operatorContext;
 
-    public CommandController(CommandService commandService, RiskService riskService, OperatorContext operatorContext) {
+    public CommandController(CommandService commandService, CommandExecutionRunner commandExecutionRunner,
+                             RiskService riskService, OperatorContext operatorContext) {
         this.commandService = commandService;
+        this.commandExecutionRunner = commandExecutionRunner;
         this.riskService = riskService;
         this.operatorContext = operatorContext;
     }
@@ -27,7 +30,13 @@ public class CommandController {
     @PostMapping("/executions")
     public ApiResponse<CommandService.ExecutionStarted> execute(@RequestBody CommandService.ExecuteRequest request,
                                                                HttpServletRequest servletRequest) {
-        return ApiResponse.ok(commandService.executeSync(request, operatorContext.currentOperator(servletRequest)));
+        var execution = commandExecutionRunner.start(request, operatorContext.currentOperator(servletRequest), null);
+        return ApiResponse.ok(new CommandService.ExecutionStarted(
+                execution.id,
+                execution.targetId,
+                execution.status,
+                execution.executedAt
+        ));
     }
 
     @GetMapping("/executions")
@@ -52,11 +61,10 @@ public class CommandController {
     @PostMapping("/executions/{id}/rerun")
     public ApiResponse<CommandExecutionDto> rerun(@PathVariable Long id, @RequestBody CommandService.ExecuteRequest request,
                                                   HttpServletRequest servletRequest) {
-        return ApiResponse.ok(CommandExecutionDto.from(commandService.rerun(id, request,
+        return ApiResponse.ok(CommandExecutionDto.from(commandExecutionRunner.rerun(id, request,
                 operatorContext.currentOperator(servletRequest))));
     }
 
     public record RiskRequest(Long targetId, String command) {
     }
 }
-

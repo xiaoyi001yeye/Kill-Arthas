@@ -145,12 +145,12 @@ public class AccessTargetService {
     }
 
     @Transactional
-    public AccessTargetDto attach(Long id, Integer telnetPort, Integer httpPort, String operatorName) {
+    public AccessTargetDto attach(Long id, Integer telnetPort, Integer httpPort, Boolean forceRestart, String operatorName) {
         var target = get(id);
         target.telnetPort = telnetPort == null ? target.telnetPort : telnetPort;
         target.httpPort = httpPort == null ? target.httpPort : httpPort;
         try {
-            arthasInstallationService.attach(target, operatorName);
+            arthasInstallationService.attach(target, Boolean.TRUE.equals(forceRestart), operatorName);
             target.arthasStatus = ArthasStatus.ATTACHED;
             target.latestOperationTime = Instant.now();
             target.latestFailureReason = null;
@@ -164,6 +164,19 @@ public class AccessTargetService {
             auditService.record("TARGET_ATTACH", "ACCESS_TARGET", id, operatorName, "FAILED", error.getMessage(), null, null);
             throw error;
         }
+    }
+
+    @Transactional
+    public void markArthasDisconnected(Long id, String reason) {
+        var target = get(id);
+        if (target.arthasStatus != ArthasStatus.ATTACHED) {
+            return;
+        }
+        target.arthasStatus = ArthasStatus.DISCONNECTED;
+        target.latestOperationTime = Instant.now();
+        target.latestFailureReason = reason;
+        repository.save(target);
+        auditService.record("TARGET_ARTHAS_DISCONNECTED", "ACCESS_TARGET", id, "system", "SUCCESS", reason, null, null);
     }
 
     @Transactional
