@@ -149,6 +149,52 @@ class ArthasHttpCommandClientTest {
         assertFalse(result.contains("cost="));
     }
 
+    @Test
+    void skipsSyntheticTraceRootAndKeepsChildPercentages() throws Exception {
+        var result = format("""
+                {
+                  "type": "trace",
+                  "jobId": 3,
+                  "root": {
+                    "timestamp": "2026-05-29 17:17:05.942005",
+                    "threadName": "DubboServerHandler-172.17.162.104:30231-thread-201",
+                    "threadId": 680,
+                    "daemon": true,
+                    "priority": 5,
+                    "children": [
+                      {
+                        "className": "com.riil.insight.mdc.model.service.ModelTreeService",
+                        "methodName": "getTreeNoCache",
+                        "cost": 1157028635,
+                        "children": [
+                          {
+                            "className": "org.springframework.util.CollectionUtils",
+                            "methodName": "isEmpty",
+                            "lineNumber": 307,
+                            "cost": 53311
+                          },
+                          {
+                            "className": "com.riil.insight.mdc.model.service.ModelTreeService",
+                            "methodName": "recursionTree",
+                            "lineNumber": 316,
+                            "minCost": 720013,
+                            "maxCost": 231319796,
+                            "totalCost": 1136186585,
+                            "times": 21
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+                """);
+
+        assertFalse(result.contains("[-] -:-()"));
+        assertTrue(result.contains("    `---[1157.028635ms] com.riil.insight.mdc.model.service.ModelTreeService:getTreeNoCache()"));
+        assertTrue(result.contains("        +---[0.00% 0.053311ms] org.springframework.util.CollectionUtils:isEmpty() #307"));
+        assertTrue(result.contains("\u001B[31m[98.20% min=0.720013ms,max=231.319796ms,total=1136.186585ms,count=21]\u001B[0m com.riil.insight.mdc.model.service.ModelTreeService:recursionTree() #316"));
+    }
+
     private String format(String json) throws Exception {
         Method method = ArthasHttpCommandClient.class.getDeclaredMethod("formatResult", JsonNode.class, int.class);
         method.setAccessible(true);

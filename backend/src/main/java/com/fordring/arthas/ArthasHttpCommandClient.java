@@ -486,9 +486,29 @@ public class ArthasHttpCommandClient {
 
         var output = new StringBuilder();
         output.append("`---").append(traceThreadText(root)).append('\n');
-        appendTraceNode(output, root, "    ", true, traceNodeTotalCostNanos(root), false);
+        if (isSyntheticTraceRoot(root)) {
+            appendTopLevelTraceChildren(output, root);
+        } else {
+            appendTraceNode(output, root, "    ", true, traceNodeTotalCostNanos(root), false);
+        }
         output.append('\n');
         return output.toString();
+    }
+
+    private boolean isSyntheticTraceRoot(JsonNode node) {
+        return "-".equals(text(node, "className")) && "-".equals(text(node, "methodName"));
+    }
+
+    private void appendTopLevelTraceChildren(StringBuilder output, JsonNode root) {
+        var children = firstPresent(root, "children");
+        if (!children.isArray() || children.isEmpty()) {
+            return;
+        }
+        for (var index = 0; index < children.size(); index++) {
+            var child = children.get(index);
+            appendTraceNode(output, child, "    ", index == children.size() - 1,
+                    traceNodeTotalCostNanos(child), false);
+        }
     }
 
     private String traceThreadText(JsonNode root) {

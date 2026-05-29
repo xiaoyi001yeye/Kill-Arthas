@@ -1,6 +1,6 @@
-import { App as AntdApp, Button, Checkbox, Divider, Drawer, Empty, Form, Input, InputNumber, Space, Switch } from 'antd';
-import { Activity, ArrowRight, Copy, Play, Power, Square, Trash2 } from 'lucide-react';
-import { useMemo, useRef, useState } from 'react';
+import { App as AntdApp, Button, Checkbox, Divider, Drawer, Empty, Form, Input, InputNumber, Select, Space, Switch } from 'antd';
+import { Activity, ArrowRight, Copy, Flame, Play, Power, RotateCw, Square, Trash2 } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate, useParams } from 'react-router-dom';
@@ -31,6 +31,22 @@ type TraceFormValues = {
   excludeClassPattern?: string;
 };
 
+type ProfilerFormValues = {
+  event: 'wall' | 'cpu' | 'alloc' | 'lock';
+  durationSeconds: number;
+  format: 'md' | 'flat' | 'tree' | 'traces' | 'collapsed';
+  topN: number;
+};
+
+type ProfilerRun = {
+  startedAt: number;
+  durationSeconds: number;
+  stopCommand: string;
+  startCommand: string;
+  event: ProfilerFormValues['event'];
+  autoStopDue?: boolean;
+};
+
 const TRACE_INITIAL_VALUES: TraceFormValues = {
   classPattern: '',
   methodPattern: '',
@@ -42,6 +58,13 @@ const TRACE_INITIAL_VALUES: TraceFormValues = {
   includeJdkMethod: false
 };
 
+const PROFILER_INITIAL_VALUES: ProfilerFormValues = {
+  event: 'wall',
+  durationSeconds: 600,
+  format: 'md',
+  topN: 10
+};
+
 export default function ConsolePage() {
   const { targetId } = useParams();
   const navigate = useNavigate();
@@ -51,7 +74,12 @@ export default function ConsolePage() {
   const hasSelectedTarget = Number.isFinite(id);
   const [command, setCommand] = useState('dashboard -n 1');
   const [traceOpen, setTraceOpen] = useState(false);
+  const [profilerOpen, setProfilerOpen] = useState(false);
+  const [profilerRun, setProfilerRun] = useState<ProfilerRun>();
+  const [, setProfilerTick] = useState(0);
   const terminalRef = useRef<TerminalViewHandle>(null);
+  const profilerTimerRef = useRef<number>();
+  const runningRef = useRef(false);
   const terminalSession = useTerminalSession({
     enabled: hasSelectedTarget,
     targetId: id,
@@ -86,6 +114,43 @@ export default function ConsolePage() {
     { label: 'memory', command: 'memory' },
     { label: 'version', command: 'version' }
   ], []);
+
+  useEffect(() => {
+    runningRef.current = terminalSession.running;
+  }, [terminalSession.running]);
+
+  useEffect(() => () => {
+    if (profilerTimerRef.current !== undefined) {
+      window.clearTimeout(profilerTimerRef.current);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (id === undefined) {
+      setProfilerRun(undefined);
+      return;
+    }
+    setProfilerRun(readProfilerRun(id));
+  }, [id]);
+
+  useEffect(() => {
+    if (id === undefined) {
+      return;
+    }
+    if (profilerRun) {
+      localStorage.setItem(profilerStorageKey(id), JSON.stringify(profilerRun));
+    } else {
+      localStorage.removeItem(profilerStorageKey(id));
+    }
+  }, [id, profilerRun]);
+
+  useEffect(() => {
+    if (!profilerOpen) {
+      return;
+    }
+    const interval = window.setInterval(() => setProfilerTick((value) => value + 1), 1000);
+    return () => window.clearInterval(interval);
+  }, [profilerOpen]);
 
   const execute = async (nextCommand = command, source: CommandSource = 'MANUAL', timeoutSeconds?: number) => {
     if (!hasSelectedTarget || id === undefined) {
@@ -136,6 +201,65 @@ export default function ConsolePage() {
     terminalSession.stop();
   };
 
+  const startProfiler = async (values: ProfilerFormValues) => {
+    const startCommand = buildProfilerStartCommand(values);
+    const stopCommand = buildProfilerStopCommand(values);
+    if (await execute(startCommand, 'MANUAL', 60)) {
+      setProfilerRun({
+        startedAt: Date.now(),
+        durationSeconds: values.durationSeconds,
+        stopCommand,
+        startCommand,
+        event: values.event
+      });
+      message.success(`Profiler 已开始采样，${values.durationSeconds} 秒后自动输出报告`);
+    }
+  };
+
+  const stopProfiler = async (stopCommand: string) => {
+    if (profilerTimerRef.current !== undefined) {
+      window.clearTimeout(profilerTimerRef.current);
+      profilerTimerRef.current = undefined;
+    }
+    setProfilerRun(undefined);
+    await execute(stopCommand, 'MANUAL', 120);
+  };
+
+  const forgetProfilerRun = () => {
+    if (profilerTimerRef.current !== undefined) {
+      window.clearTimeout(profilerTimerRef.current);
+      profilerTimerRef.current = undefined;
+    }
+    setProfilerRun(undefined);
+  };
+
+  useEffect(() => {
+    if (profilerTimerRef.current !== undefined) {
+      window.clearTimeout(profilerTimerRef.current);
+      profilerTimerRef.current = undefined;
+    }
+    if (!profilerRun || profilerRun.autoStopDue) {
+      return;
+    }
+    const dueAt = profilerRun.startedAt + profilerRun.durationSeconds * 1000;
+    const delay = Math.max(0, dueAt - Date.now());
+    profilerTimerRef.current = window.setTimeout(() => {
+      profilerTimerRef.current = undefined;
+      if (runningRef.current) {
+        setProfilerRun((current) => current ? { ...current, autoStopDue: true } : current);
+        message.warning('Profiler 采样已到时，但当前有命令正在执行；命令结束后会自动停止并输出报告');
+        return;
+      }
+      void stopProfiler(profilerRun.stopCommand);
+    }, delay);
+  }, [profilerRun]);
+
+  useEffect(() => {
+    if (profilerRun?.autoStopDue && !terminalSession.running) {
+      void stopProfiler(profilerRun.stopCommand);
+    }
+  }, [profilerRun, terminalSession.running]);
+
   if (!hasSelectedTarget) {
     return <ConsoleTargetPicker />;
   }
@@ -179,6 +303,7 @@ export default function ConsolePage() {
         <Space className="console-quick-actions">
           {quickCommands.map((item) => <Button key={item.label} onClick={() => execute(item.command, 'QUICK')}>{item.label}</Button>)}
           <Button icon={<Activity size={16} />} onClick={() => setTraceOpen(true)}>Trace</Button>
+          <Button icon={<Flame size={16} />} onClick={() => setProfilerOpen(true)}>Profiler</Button>
         </Space>
         <TerminalView ref={terminalRef} />
       </div>
@@ -199,6 +324,16 @@ export default function ConsolePage() {
             setTraceOpen(false);
           }
         }}
+      />
+      <ProfilerCommandDrawer
+        open={profilerOpen}
+        running={terminalSession.running}
+        profilerRun={profilerRun}
+        onClose={() => setProfilerOpen(false)}
+        onStart={startProfiler}
+        onStop={stopProfiler}
+        onForget={forgetProfilerRun}
+        onRunCommand={(nextCommand, timeoutSeconds) => execute(nextCommand, 'MANUAL', timeoutSeconds)}
       />
     </>
   );
@@ -362,6 +497,169 @@ function TraceCommandDrawer({
   );
 }
 
+function ProfilerCommandDrawer({
+  onForget,
+  onClose,
+  onRunCommand,
+  onStart,
+  onStop,
+  open,
+  profilerRun,
+  running
+}: {
+  onForget: () => void;
+  onClose: () => void;
+  onRunCommand: (command: string, timeoutSeconds?: number) => void | Promise<boolean>;
+  onStart: (values: ProfilerFormValues) => void | Promise<void>;
+  onStop: (stopCommand: string) => void | Promise<void>;
+  open: boolean;
+  profilerRun?: ProfilerRun;
+  running: boolean;
+}) {
+  const [form] = Form.useForm<ProfilerFormValues>();
+  const values = Form.useWatch([], form) ?? PROFILER_INITIAL_VALUES;
+  const startCommand = buildProfilerStartCommand(values);
+  const stopCommand = profilerRun?.stopCommand ?? buildProfilerStopCommand(values);
+  const remainingSeconds = profilerRun
+    ? Math.max(0, Math.ceil((profilerRun.startedAt + profilerRun.durationSeconds * 1000 - Date.now()) / 1000))
+    : undefined;
+  const elapsedSeconds = profilerRun
+    ? Math.max(0, Math.floor((Date.now() - profilerRun.startedAt) / 1000))
+    : undefined;
+  const statusText = profilerRun?.autoStopDue
+    ? '采样已到时，等待当前命令结束后自动输出报告。'
+    : `已采样 ${elapsedSeconds} 秒，预计 ${remainingSeconds} 秒后自动输出报告。`;
+
+  return (
+    <Drawer
+      destroyOnClose
+      open={open}
+      title="Profiler 采样"
+      width={560}
+      onClose={onClose}
+      footer={(
+        <div className="trace-drawer-footer">
+          <Button onClick={onClose}>关闭</Button>
+          {profilerRun && (
+            <Button onClick={onForget}>
+              仅清除本地状态
+            </Button>
+          )}
+          <Button
+            icon={<Square size={16} />}
+            disabled={running}
+            onClick={() => onStop(stopCommand)}
+          >
+            {profilerRun ? '停止并输出' : '停止已有采样并输出'}
+          </Button>
+          <Button
+            type="primary"
+            icon={<Play size={16} />}
+            disabled={running || !!profilerRun}
+            onClick={() => form.submit()}
+          >
+            开始采样
+          </Button>
+        </div>
+      )}
+    >
+      <Form
+        form={form}
+        initialValues={PROFILER_INITIAL_VALUES}
+        layout="vertical"
+        onFinish={(formValues) => onStart(formValues)}
+      >
+        {profilerRun && (
+          <div className="profiler-running-state">
+            <strong>{profilerRun.event} 采样中</strong>
+            <span>{statusText}</span>
+            <code>{profilerRun.startCommand}</code>
+          </div>
+        )}
+
+        <div className="profiler-session-actions">
+          <Button
+            icon={<RotateCw size={16} />}
+            disabled={running}
+            onClick={() => onRunCommand('profiler status', 30)}
+          >
+            查看状态
+          </Button>
+          <Button
+            disabled={running}
+            onClick={() => onRunCommand('profiler getSamples', 30)}
+          >
+            查看采样数
+          </Button>
+          <Button
+            disabled={running}
+            onClick={() => onRunCommand('profiler list', 30)}
+          >
+            支持事件
+          </Button>
+        </div>
+
+        <div className="trace-form-grid">
+          <Form.Item
+            label="采样事件"
+            name="event"
+            tooltip="wall 更适合定位慢请求、IO、锁等待和 RPC 等等待型耗时；cpu 更适合定位 CPU 热点。"
+            rules={[{ required: true, message: '请选择采样事件' }]}
+          >
+            <Select
+              options={[
+                { value: 'wall', label: 'wall：慢调用/等待耗时' },
+                { value: 'cpu', label: 'cpu：CPU 热点' },
+                { value: 'alloc', label: 'alloc：对象分配' },
+                { value: 'lock', label: 'lock：锁竞争' }
+              ]}
+            />
+          </Form.Item>
+          <Form.Item
+            label="采样时长 秒"
+            name="durationSeconds"
+            tooltip="Fordring 会按这个时长计时，到点后自动执行 profiler stop，让报告直接输出到控制台。"
+            rules={[{ required: true, message: '请输入采样时长' }]}
+          >
+            <InputNumber min={10} max={86400} step={30} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item
+            label="输出格式"
+            name="format"
+            tooltip="md=TopN 更适合直接在控制台查看热点；flat 是纯文本方法列表。"
+            rules={[{ required: true, message: '请选择输出格式' }]}
+          >
+            <Select
+              options={[
+                { value: 'md', label: 'md：Top 热点报告' },
+                { value: 'flat', label: 'flat：方法耗时列表' },
+                { value: 'tree', label: 'tree：调用树' },
+                { value: 'traces', label: 'traces：调用轨迹' },
+                { value: 'collapsed', label: 'collapsed：折叠栈' }
+              ]}
+            />
+          </Form.Item>
+          <Form.Item
+            label="Top N"
+            name="topN"
+            tooltip="仅 md 格式使用，例如 md=10 表示输出前 10 个热点。"
+            rules={[{ required: true, message: '请输入 Top N' }]}
+          >
+            <InputNumber min={1} max={100} style={{ width: '100%' }} disabled={values.format !== 'md'} />
+          </Form.Item>
+        </div>
+
+        <div className="trace-command-preview profiler-command-preview">
+          <span>开始命令</span>
+          <code>{startCommand}</code>
+          <span>停止输出命令</span>
+          <code>{stopCommand}</code>
+        </div>
+      </Form>
+    </Drawer>
+  );
+}
+
 function buildTraceCommand(values: Partial<TraceFormValues>) {
   const classPattern = values.classPattern?.trim() ?? '';
   const methodPattern = values.methodPattern?.trim() ?? '';
@@ -398,6 +696,47 @@ function buildTraceCommand(values: Partial<TraceFormValues>) {
   }
 
   return args.join(' ');
+}
+
+function buildProfilerStartCommand(values: Partial<ProfilerFormValues>) {
+  const event = values.event ?? PROFILER_INITIAL_VALUES.event;
+  return `profiler start --event ${event}`;
+}
+
+function buildProfilerStopCommand(values: Partial<ProfilerFormValues>) {
+  const format = values.format ?? PROFILER_INITIAL_VALUES.format;
+  if (format === 'md') {
+    const topN = values.topN ?? PROFILER_INITIAL_VALUES.topN;
+    return `profiler stop --format md=${topN}`;
+  }
+  return `profiler stop --format ${format}`;
+}
+
+function profilerStorageKey(targetId: number) {
+  return `fordring.profilerRun.${targetId}`;
+}
+
+function readProfilerRun(targetId: number): ProfilerRun | undefined {
+  try {
+    const raw = localStorage.getItem(profilerStorageKey(targetId));
+    if (!raw) {
+      return undefined;
+    }
+    const value = JSON.parse(raw) as Partial<ProfilerRun>;
+    if (!value.startedAt || !value.durationSeconds || !value.stopCommand || !value.startCommand || !value.event) {
+      return undefined;
+    }
+    return {
+      startedAt: value.startedAt,
+      durationSeconds: value.durationSeconds,
+      stopCommand: value.stopCommand,
+      startCommand: value.startCommand,
+      event: value.event,
+      autoStopDue: value.autoStopDue
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function traceCondition(values: Partial<TraceFormValues>) {

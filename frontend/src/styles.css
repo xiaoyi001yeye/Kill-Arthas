@@ -196,6 +196,11 @@ body {
   white-space: pre-wrap;
 }
 
+.terminal-hot {
+  color: #ff5c5c;
+  font-weight: 700;
+}
+
 .terminal-xterm {
   height: 430px;
   min-height: 430px;
@@ -256,6 +261,40 @@ body {
 .trace-command-preview span {
   color: var(--color-subtle);
   font-size: 12px;
+}
+
+.profiler-command-preview {
+  margin-top: 8px;
+}
+
+.profiler-running-state {
+  border: 1px solid #b7eb8f;
+  border-radius: 8px;
+  background: #f6ffed;
+  color: #135200;
+  padding: 12px 14px;
+  display: grid;
+  gap: 4px;
+  margin-bottom: 18px;
+}
+
+.profiler-running-state span {
+  color: #3f6b1f;
+  font-size: 13px;
+}
+
+.profiler-running-state code {
+  color: #135200;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.profiler-session-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 18px;
 }
 
 .trace-command-preview code,

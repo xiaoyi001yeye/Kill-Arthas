@@ -1,12 +1,14 @@
 import { Button, DatePicker, Drawer, Form, Input, message, Modal, Select, Space, Table } from 'antd';
 import { RefreshCw, Search } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import dayjs from 'dayjs';
 import { api, unwrap } from '../api';
 import type { AccessTarget, CommandExecution, PageResult } from '../types';
 import { CommandStatusTag } from '../ui/StatusTag';
+
+const TRACE_HOT_NODE_PERCENT = 80;
 
 export default function CommandsPage() {
   const [selected, setSelected] = useState<CommandExecution>();
@@ -209,12 +211,12 @@ function targetName(row: CommandExecution, targetNameById: Map<number, string>) 
   return targetNameById.get(row.targetId) ?? `目标 #${row.targetId}`;
 }
 
-function formatCommandOutput(command: string, content: string) {
+function formatCommandOutput(command: string, content: string): ReactNode {
   const plainContent = stripAnsi(content);
   if (!command.trim().startsWith('trace ')) {
-    return plainContent;
+    return renderAnsiText(content);
   }
-  return formatTraceOutput(plainContent);
+  return renderTraceText(formatTraceOutput(plainContent));
 }
 
 function formatTraceOutput(content: string) {
@@ -289,8 +291,23 @@ function formatTraceTree(value: any) {
     return JSON.stringify(value, null, 2);
   }
   const rows = ['`---' + traceThreadText(root)];
-  appendTraceNode(rows, root, '    ', true, traceNodeTotalCostNanos(root), false);
+  if (isSyntheticTraceRoot(root)) {
+    appendTopLevelTraceChildren(rows, root);
+  } else {
+    appendTraceNode(rows, root, '    ', true, traceNodeTotalCostNanos(root), false);
+  }
   return rows.join('\n');
+}
+
+function isSyntheticTraceRoot(node: any) {
+  return dash(node?.className) === '-' && dash(node?.methodName) === '-';
+}
+
+function appendTopLevelTraceChildren(rows: string[], root: any) {
+  const children = Array.isArray(root.children) ? root.children : [];
+  children.forEach((child: any, index: number) => {
+    appendTraceNode(rows, child, '    ', index === children.length - 1, traceNodeTotalCostNanos(child), false);
+  });
 }
 
 function appendTraceNode(rows: string[], node: any, prefix: string, last: boolean, rootCostNanos: number, includePercent: boolean) {
@@ -372,6 +389,63 @@ function firstPresent(value: any, fields: string[]) {
 
 function stripAnsi(value: string) {
   return value.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, '');
+}
+
+function renderTraceText(value: string): ReactNode {
+  const lines = value.split('\n');
+  return lines.map((line, index) => (
+    <span key={index}>
+      {renderTraceLine(line, index)}
+      {index < lines.length - 1 ? '\n' : ''}
+    </span>
+  ));
+}
+
+function renderTraceLine(line: string, lineIndex: number): ReactNode {
+  const match = line.match(/\[(\d+(?:\.\d+)?)% [^\]]+\]/);
+  if (!match || Number(match[1]) < TRACE_HOT_NODE_PERCENT || match.index === undefined) {
+    return line;
+  }
+  const start = match.index;
+  const end = start + match[0].length;
+  return [
+    line.slice(0, start),
+    <span className="terminal-hot" key={`hot-${lineIndex}`}>{match[0]}</span>,
+    line.slice(end)
+  ];
+}
+
+function renderAnsiText(value: string): ReactNode {
+  const nodes: ReactNode[] = [];
+  const ansiPattern = /\x1B\[([0-9;]*)m/g;
+  let lastIndex = 0;
+  let hot = false;
+  let key = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = ansiPattern.exec(value)) !== null) {
+    if (match.index > lastIndex) {
+      nodes.push(wrapTerminalText(value.slice(lastIndex, match.index), hot, key++));
+    }
+    const codes = match[1].split(';').filter(Boolean);
+    if (codes.length === 0 || codes.includes('0') || codes.includes('39')) {
+      hot = false;
+    }
+    if (codes.includes('31') || codes.includes('91')) {
+      hot = true;
+    }
+    lastIndex = ansiPattern.lastIndex;
+  }
+
+  if (lastIndex < value.length) {
+    nodes.push(wrapTerminalText(value.slice(lastIndex), hot, key++));
+  }
+
+  return nodes.length > 0 ? nodes : value;
+}
+
+function wrapTerminalText(value: string, hot: boolean, key: number): ReactNode {
+  return hot ? <span className="terminal-hot" key={key}>{value}</span> : value;
 }
 
 function dash(value: unknown) {
