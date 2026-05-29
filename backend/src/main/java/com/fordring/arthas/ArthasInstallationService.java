@@ -24,8 +24,11 @@ public class ArthasInstallationService {
 
     private static final String CHECK_SCRIPT = """
             BOOT="$HOME/.arthas/arthas-boot.jar"
+            detect_version() {
+              java -jar "$1" --version 2>&1 | sed -nE 's/.*([0-9]+\\.[0-9]+\\.[0-9]+([.-][A-Za-z0-9]+)?).*/\\1/p' | head -n 1
+            }
             if [ -f "$BOOT" ]; then
-              if command -v java >/dev/null 2>&1 && VERSION=$(java -jar "$BOOT" --version 2>/dev/null | head -n 1); then
+              if command -v java >/dev/null 2>&1 && VERSION=$(detect_version "$BOOT"); then
                 echo "installed=true"
                 echo "source=$BOOT"
                 echo "version=${VERSION:-unknown}"
@@ -67,6 +70,9 @@ public class ArthasInstallationService {
             validate_boot() {
               java -jar "$1" --version > "$VERSION_OUT" 2>&1
             }
+            detect_version() {
+              sed -nE 's/.*([0-9]+\\.[0-9]+\\.[0-9]+([.-][A-Za-z0-9]+)?).*/\\1/p' "$VERSION_OUT" | head -n 1
+            }
             if ! command -v java >/dev/null 2>&1; then
               echo "JAVA_MISSING"
               exit 20
@@ -74,7 +80,8 @@ public class ArthasInstallationService {
             if [ -f "$BOOT" ]; then
               if validate_boot "$BOOT"; then
                 echo "ALREADY_INSTALLED"
-                head -n 1 "$VERSION_OUT" || true
+                echo "source=$BOOT"
+                echo "version=$(detect_version)"
                 exit 0
               fi
               mv "$BOOT" "$BOOT.corrupt.$(date +%s)" 2>/dev/null || rm -f "$BOOT"
@@ -103,7 +110,7 @@ public class ArthasInstallationService {
             fi
             echo "INSTALLED"
             echo "source=$BOOT"
-            head -n 1 "$VERSION_OUT" || true
+            echo "version=$(detect_version)"
             """;
 
     private static final String ATTACH_SCRIPT_TEMPLATE = """
@@ -283,7 +290,8 @@ public class ArthasInstallationService {
             log.info("Arthas installation check finished traceId={} targetId={} installed={} exitStatus={} stdoutPreview={} stderrPreview={}",
                     traceId, target.id, installed, result.exitStatus(), preview(result.stdout()), preview(result.stderr()));
             auditService.record("ARTHAS_INSTALLATION_CHECK", "ACCESS_TARGET", target.id, operatorName, "SUCCESS", null, null, null);
-            return new Result(installed, message, extractValue(result.stdout(), "version"), traceId, preview(result.stdout()));
+            return new Result(installed, message, cleanVersion(extractValue(result.stdout(), "version")),
+                    extractValue(result.stdout(), "source"), traceId, preview(result.stdout()));
         } catch (IOException error) {
             log.error("Arthas installation check failed traceId={} targetId={} host={} sshPort={} errorType={} message={}",
                     traceId, target.id, target.host, target.sshPort, error.getClass().getName(), error.getMessage(), error);
@@ -316,7 +324,8 @@ public class ArthasInstallationService {
             }
             copyHttpClientJar(target, traceId, operatorName);
             auditService.record("ARTHAS_INSTALL", "ACCESS_TARGET", target.id, operatorName, "SUCCESS", null, null, null);
-            return new Result(true, "Arthas 安装完成", extractInstalledVersion(result.stdout()), traceId, preview(result.stdout()));
+            return new Result(true, "Arthas 安装完成", extractInstalledVersion(result.stdout()),
+                    extractValue(result.stdout(), "source"), traceId, preview(result.stdout()));
         } catch (IOException error) {
             log.error("Arthas installation failed traceId={} targetId={} host={} sshPort={} errorType={} message={}",
                     traceId, target.id, target.host, target.sshPort, error.getClass().getName(), error.getMessage(), error);
@@ -352,7 +361,7 @@ public class ArthasInstallationService {
                 throw new IllegalArgumentException("接入 Arthas 失败：" + message);
             }
             auditService.record("ARTHAS_ATTACH", "ACCESS_TARGET", target.id, operatorName, "SUCCESS", null, null, null);
-            return new Result(true, "Arthas 已接入", "-", traceId, preview(result.stdout()));
+            return new Result(true, "Arthas 已接入", "-", "-", traceId, preview(result.stdout()));
         } catch (IOException error) {
             log.error("Arthas attach failed traceId={} targetId={} host={} sshPort={} errorType={} message={}",
                     traceId, target.id, target.host, target.sshPort, error.getClass().getName(), error.getMessage(), error);
@@ -385,7 +394,7 @@ public class ArthasInstallationService {
                 throw new IllegalArgumentException("断开 Arthas 失败：" + message);
             }
             auditService.record("ARTHAS_DETACH", "ACCESS_TARGET", target.id, operatorName, "SUCCESS", null, null, null);
-            return new Result(true, "Arthas 已断开", "-", traceId, preview(result.stdout()));
+            return new Result(true, "Arthas 已断开", "-", "-", traceId, preview(result.stdout()));
         } catch (IOException error) {
             log.error("Arthas detach failed traceId={} targetId={} host={} sshPort={} errorType={} message={}",
                     traceId, target.id, target.host, target.sshPort, error.getClass().getName(), error.getMessage(), error);
@@ -540,17 +549,33 @@ public class ArthasInstallationService {
     }
 
     private static String extractInstalledVersion(String output) {
-        var version = extractValue(output, "version");
+        var version = cleanVersion(extractValue(output, "version"));
         if (!"-".equals(version)) {
             return version;
         }
         for (var line : output.split("\\R")) {
             var trimmed = line.trim();
-            if (!trimmed.isBlank() && !trimmed.contains("=") && !trimmed.equals("INSTALLED") && !trimmed.equals("ALREADY_INSTALLED")) {
+            if (looksLikeVersion(trimmed)) {
                 return trimmed;
             }
         }
         return "-";
+    }
+
+    private static String cleanVersion(String value) {
+        if (value == null || value.isBlank() || "unknown".equals(value) || "-".equals(value)) {
+            return value == null || value.isBlank() ? "-" : value;
+        }
+        for (var token : value.split("[^0-9A-Za-z.-]+")) {
+            if (looksLikeVersion(token)) {
+                return token;
+            }
+        }
+        return "unknown";
+    }
+
+    private static boolean looksLikeVersion(String value) {
+        return value != null && value.matches("[0-9]+\\.[0-9]+\\.[0-9]+([.-][A-Za-z0-9]+)?");
     }
 
     private static String extractValue(String output, String key) {
@@ -587,7 +612,7 @@ public class ArthasInstallationService {
         return target.targetType == TargetType.DOCKER_CONTAINER ? "docker-exec" : "ssh-host";
     }
 
-    public record Result(boolean installed, String message, String version, String traceId, String outputPreview) {
+    public record Result(boolean installed, String message, String version, String installationPath, String traceId, String outputPreview) {
     }
 
 }

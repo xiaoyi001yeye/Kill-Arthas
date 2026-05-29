@@ -9,7 +9,7 @@ import { TargetStatusTag } from '../ui/StatusTag';
 
 type Stats = { totalCount: number; attachedCount: number; pendingCount: number; failedCount: number };
 type JavaProcessDiscoveryResult = { processes: { processId: number; processName: string }[] };
-type ArthasInstallationResult = { installed: boolean; message: string; version: string; traceId: string; outputPreview: string };
+type ArthasInstallationResult = { installed: boolean; message: string; version: string; installationPath?: string; traceId: string; outputPreview: string };
 type ArthasInstallPrompt = { target: AccessTarget; message: string; failureMessage?: string };
 type ArthasPromptAction = 'install' | 'install-and-attach';
 
@@ -94,7 +94,7 @@ export default function AccessPage() {
     mutationFn: (id: number) => unwrap<ArthasInstallationResult>(api.post(`/api/access-targets/${id}/arthas/check-installation`)),
     onSuccess: (result) => {
       if (result.installed) {
-        message.success(`${result.message}，版本：${result.version || '未知'}`);
+        message.success(formatArthasInstallationMessage(result));
       } else {
         message.warning(result.message);
       }
@@ -106,7 +106,7 @@ export default function AccessPage() {
   const installArthas = useMutation({
     mutationFn: (id: number) => unwrap<ArthasInstallationResult>(api.post(`/api/access-targets/${id}/arthas/install`)),
     onSuccess: async (result) => {
-      message.success(`${result.message}，版本：${result.version || '未知'}`);
+      message.success(formatArthasInstallationMessage(result));
       await refreshAccessTargets();
     },
     onError: (error) => {
@@ -503,4 +503,10 @@ function isMissingArthasBoot(message: string) {
   return message.includes('arthas-boot.jar')
     || message.includes('请先安装 Arthas')
     || message.includes('ARTHAS_BOOT_MISSING');
+}
+
+function formatArthasInstallationMessage(result: ArthasInstallationResult) {
+  const path = result.installationPath && result.installationPath !== '-' ? result.installationPath : '未知';
+  const version = result.version && result.version !== '-' && result.version !== 'unknown' ? result.version : '未识别';
+  return `${result.message}，安装路径：${path}，版本号：${version}`;
 }
