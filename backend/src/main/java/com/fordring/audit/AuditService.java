@@ -2,6 +2,8 @@ package com.fordring.audit;
 
 import com.fordring.common.enums.RiskLevel;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 
@@ -13,6 +15,7 @@ public class AuditService {
         this.repository = repository;
     }
 
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void record(String action, String resourceType, Object resourceId, String operatorName,
                        String result, String failureReason, RiskLevel riskLevel, Boolean riskConfirmed) {
         var log = new AuditLog();
@@ -29,4 +32,3 @@ public class AuditService {
         repository.save(log);
     }
 }
-

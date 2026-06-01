@@ -1,8 +1,10 @@
 import { Alert, Button, Collapse, Form, Input, InputNumber, message, Modal, Radio, Select, Space, Table } from 'antd';
 import { CheckCircle, Clock3, Copy, Cuboid, Download, Edit3, PackageCheck, Plus, Search, Trash2 } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import dayjs from 'dayjs';
 import { Link } from 'react-router-dom';
 import { useState, type ReactNode } from 'react';
+import type { TableProps } from 'antd';
 import { api, unwrap } from '../api';
 import type { AccessTarget, PageResult } from '../types';
 import { TargetStatusTag } from '../ui/StatusTag';
@@ -12,6 +14,8 @@ type JavaProcessDiscoveryResult = { processes: { processId: number; processName:
 type ArthasInstallationResult = { installed: boolean; message: string; version: string; installationPath?: string; traceId: string; outputPreview: string };
 type ArthasInstallPrompt = { target: AccessTarget; message: string; failureMessage?: string };
 type ArthasPromptAction = 'install' | 'install-and-attach';
+type SortField = 'name' | 'host' | 'targetType' | 'arthasStatus' | 'latestOperationTime';
+type SortOrder = 'ascend' | 'descend';
 
 export default function AccessPage() {
   const [form] = Form.useForm();
@@ -20,6 +24,10 @@ export default function AccessPage() {
   const [editingTarget, setEditingTarget] = useState<AccessTarget>();
   const [arthasInstallPrompt, setArthasInstallPrompt] = useState<ArthasInstallPrompt>();
   const [arthasPromptAction, setArthasPromptAction] = useState<ArthasPromptAction>();
+  const [keyword, setKeyword] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [sortState, setSortState] = useState<{ field: SortField; order: SortOrder }>();
   const queryClient = useQueryClient();
   const closeEditor = () => {
     setEditorOpen(false);
@@ -31,8 +39,16 @@ export default function AccessPage() {
   };
   const stats = useQuery({ queryKey: ['access-stats'], queryFn: () => unwrap<Stats>(api.get('/api/access-targets/stats')) });
   const targets = useQuery({
-    queryKey: ['access-targets'],
-    queryFn: () => unwrap<PageResult<AccessTarget>>(api.get('/api/access-targets?page=1&pageSize=10'))
+    queryKey: ['access-targets', { keyword: keyword.trim(), page, pageSize, sortState }],
+    queryFn: () => unwrap<PageResult<AccessTarget>>(api.get('/api/access-targets', {
+      params: {
+        keyword: keyword.trim() || undefined,
+        page,
+        pageSize,
+        sortField: sortState?.field,
+        sortOrder: sortState?.order === 'ascend' ? 'asc' : sortState?.order === 'descend' ? 'desc' : undefined
+      }
+    }))
   });
   const create = useMutation({
     mutationFn: (values: any) => unwrap<AccessTarget>(api.post('/api/access-targets', values)),
@@ -218,6 +234,22 @@ export default function AccessPage() {
     ].filter(Boolean).join('\n'));
     message.success('已复制排障信息');
   };
+
+  const handleTableChange: TableProps<AccessTarget>['onChange'] = (pagination, _filters, sorter) => {
+    setPage(pagination.current ?? 1);
+    setPageSize(pagination.pageSize ?? 10);
+    const activeSorter = Array.isArray(sorter) ? sorter[0] : sorter;
+    const field = typeof activeSorter.field === 'string' && isAccessTargetSortField(activeSorter.field)
+      ? activeSorter.field
+      : undefined;
+    if (field && activeSorter.order) {
+      setSortState({ field, order: activeSorter.order });
+    } else {
+      setSortState(undefined);
+    }
+  };
+
+  const sortedOrder = (field: SortField) => sortState?.field === field ? sortState.order : undefined;
 
   return (
     <>
@@ -423,12 +455,17 @@ export default function AccessPage() {
       </div>
       <div className="panel">
         <div className="toolbar">
-          <Input prefix={<Search size={16} />} placeholder="搜索名称、主机或目标" style={{ width: 320 }} />
-          <Radio.Group defaultValue="ALL">
-            <Radio.Button value="ALL">全部</Radio.Button>
-            <Radio.Button value="PHYSICAL_JAVA">物理机</Radio.Button>
-            <Radio.Button value="DOCKER_CONTAINER">Docker 容器</Radio.Button>
-          </Radio.Group>
+          <Input
+            allowClear
+            prefix={<Search size={16} />}
+            placeholder="搜索名称、主机、进程或容器"
+            style={{ width: 320 }}
+            value={keyword}
+            onChange={(event) => {
+              setKeyword(event.target.value);
+              setPage(1);
+            }}
+          />
           <div className="spacer" />
           <Button type="primary" icon={<Plus size={16} />} onClick={() => openEditor()}>新增接入</Button>
         </div>
@@ -436,14 +473,24 @@ export default function AccessPage() {
           rowKey="id"
           loading={targets.isLoading}
           dataSource={targets.data?.items ?? []}
-          pagination={{ pageSize: 10, total: targets.data?.total ?? 0 }}
+          pagination={{ current: page, pageSize, total: targets.data?.total ?? 0, showSizeChanger: true }}
+          onChange={handleTableChange}
           columns={[
-            { title: '名称', dataIndex: 'name' },
-            { title: '主机', dataIndex: 'host' },
-            { title: '目标类型', render: (_, row) => row.targetType === 'DOCKER_CONTAINER' ? 'Docker 容器' : '物理机 Java' },
+            { title: '名称', dataIndex: 'name', sorter: true, sortOrder: sortedOrder('name') },
+            { title: '主机', dataIndex: 'host', sorter: true, sortOrder: sortedOrder('host') },
+            {
+              title: '目标类型',
+              dataIndex: 'targetType',
+              sorter: true,
+              sortOrder: sortedOrder('targetType'),
+              render: (_, row) => formatTargetType(row.targetType)
+            },
             { title: '目标', render: (_, row) => row.processId ? `PID ${row.processId}` : '-' },
             {
               title: 'Arthas状态',
+              dataIndex: 'arthasStatus',
+              sorter: true,
+              sortOrder: sortedOrder('arthasStatus'),
               render: (_, row) => (
                 <div className="target-status-cell">
                   <TargetStatusTag status={row.arthasStatus} />
@@ -455,7 +502,13 @@ export default function AccessPage() {
                 </div>
               )
             },
-            { title: '最近操作时间', dataIndex: 'latestOperationTime' },
+            {
+              title: '最近操作时间',
+              dataIndex: 'latestOperationTime',
+              sorter: true,
+              sortOrder: sortedOrder('latestOperationTime'),
+              render: (value) => formatDateTime(value)
+            },
             {
               title: '操作',
               render: (_, row) => (
@@ -493,6 +546,26 @@ export default function AccessPage() {
 
 function Metric({ icon, label, value }: { icon: ReactNode; label: string; value: number }) {
   return <div className="stat-card"><div className="stat-icon">{icon}</div><div><span>{label}</span><strong>{value}</strong></div></div>;
+}
+
+function isAccessTargetSortField(field: string): field is SortField {
+  return field === 'name'
+    || field === 'host'
+    || field === 'targetType'
+    || field === 'arthasStatus'
+    || field === 'latestOperationTime';
+}
+
+function formatTargetType(targetType: AccessTarget['targetType']) {
+  return targetType === 'DOCKER_CONTAINER' ? 'Docker 容器' : '物理机 Java';
+}
+
+function formatDateTime(value?: string) {
+  if (!value) {
+    return '-';
+  }
+  const parsed = dayjs(value);
+  return parsed.isValid() ? parsed.format('YYYY-MM-DD HH:mm:ss') : value;
 }
 
 function getErrorMessage(error: unknown, fallback: string) {

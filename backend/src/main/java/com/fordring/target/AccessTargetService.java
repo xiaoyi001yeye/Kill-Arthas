@@ -8,6 +8,7 @@ import com.fordring.config.FordringProperties;
 import com.fordring.credential.CredentialService;
 import com.fordring.arthas.ArthasInstallationService;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -53,12 +54,12 @@ public class AccessTargetService {
         return new Stats(total, attached, Math.max(0, total - attached), failed);
     }
 
-    public PageResult<AccessTargetDto> list(String keyword, int page, int pageSize) {
-        var pageable = PageRequest.of(Math.max(page - 1, 0), pageSize);
+    public PageResult<AccessTargetDto> list(String keyword, int page, int pageSize, String sortField, String sortOrder) {
+        var pageable = PageRequest.of(Math.max(page - 1, 0), pageSize, sort(sortField, sortOrder));
         var result = keyword == null || keyword.isBlank()
                 ? repository.findAll(pageable)
-                : repository.findByNameContainingIgnoreCaseOrHostContainingIgnoreCaseOrProcessNameContainingIgnoreCase(
-                keyword, keyword, keyword, pageable);
+                : repository.findByNameContainingIgnoreCaseOrHostContainingIgnoreCaseOrProcessNameContainingIgnoreCaseOrContainerNameContainingIgnoreCase(
+                keyword, keyword, keyword, keyword, pageable);
         return new PageResult<>(result.map(AccessTargetDto::from).toList(), page, pageSize, result.getTotalElements());
     }
 
@@ -215,6 +216,22 @@ public class AccessTargetService {
             throw new IllegalArgumentException("SSH 端口必须在 1-65535 之间");
         }
         return value;
+    }
+
+    private static Sort sort(String sortField, String sortOrder) {
+        var property = switch (sortField == null ? "" : sortField) {
+            case "name" -> "name";
+            case "host" -> "host";
+            case "targetType" -> "targetType";
+            case "arthasStatus" -> "arthasStatus";
+            case "latestOperationTime" -> "latestOperationTime";
+            default -> null;
+        };
+        if (property == null) {
+            return Sort.unsorted();
+        }
+        var direction = "asc".equalsIgnoreCase(sortOrder) ? Sort.Direction.ASC : Sort.Direction.DESC;
+        return Sort.by(direction, property);
     }
 
     private static void validateTarget(CreateAccessTargetRequest request) {

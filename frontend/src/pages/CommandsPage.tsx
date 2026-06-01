@@ -1,22 +1,40 @@
-import { Button, DatePicker, Drawer, Form, Input, message, Modal, Select, Space, Table } from 'antd';
-import { RefreshCw, Search } from 'lucide-react';
+import { Button, DatePicker, Drawer, Form, Input, message, Modal, Select, Space, Table, Upload as AntUpload } from 'antd';
+import { Download, RefreshCw, Search, Upload as UploadIcon } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useState, type ReactNode } from 'react';
+import { useState, type Key, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import dayjs from 'dayjs';
 import { api, unwrap } from '../api';
-import type { AccessTarget, CommandExecution, PageResult } from '../types';
+import type { AccessTarget, CommandExecution, CommandHistoryItem, PageResult } from '../types';
 import { CommandStatusTag } from '../ui/StatusTag';
 
 const TRACE_HOT_NODE_PERCENT = 80;
 
 export default function CommandsPage() {
-  const [selected, setSelected] = useState<CommandExecution>();
+  const [selected, setSelected] = useState<CommandHistoryItem>();
+  const [selectedRowKeys, setSelectedRowKeys] = useState<Key[]>([]);
+  const [keyword, setKeyword] = useState('');
+  const [origin, setOrigin] = useState<'ALL' | 'LOCAL' | 'IMPORTED'>('ALL');
+  const [status, setStatus] = useState('ALL');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importFile, setImportFile] = useState<File>();
+  const [importPreview, setImportPreview] = useState<ImportPreview>();
   const [saveForm] = Form.useForm();
   const queryClient = useQueryClient();
-  const executions = useQuery({
-    queryKey: ['command-executions'],
-    queryFn: () => unwrap<PageResult<CommandExecution>>(api.get('/api/commands/executions?page=1&pageSize=10'))
+  const histories = useQuery({
+    queryKey: ['command-history', keyword, origin, status, page, pageSize],
+    queryFn: () => {
+      const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize), origin });
+      if (keyword.trim()) {
+        params.set('keyword', keyword.trim());
+      }
+      if (status !== 'ALL') {
+        params.set('status', status);
+      }
+      return unwrap<PageResult<CommandHistoryItem>>(api.get(`/api/command-history/items?${params.toString()}`));
+    }
   });
   const targets = useQuery({
     queryKey: ['access-targets', 'command-history-targets'],
@@ -24,20 +42,20 @@ export default function CommandsPage() {
   });
   const targetNameById = new Map((targets.data?.items ?? []).map((target) => [target.id, target.name]));
   const selectedDetail = useQuery({
-    queryKey: ['command-execution', selected?.id],
+    queryKey: ['command-history-detail', selected?.historyId],
     enabled: !!selected,
-    queryFn: () => unwrap<CommandExecution>(api.get(`/api/commands/executions/${selected!.id}`)),
+    queryFn: () => unwrap<CommandHistoryItem>(api.get(`/api/command-history/items/${encodeURIComponent(selected!.historyId)}`)),
     refetchInterval: (query) => query.state.data?.status === 'RUNNING' ? 1000 : false
   });
   const activeSelected = selectedDetail.data ?? selected;
   const output = useQuery({
-    queryKey: ['command-output', activeSelected?.id],
+    queryKey: ['command-history-output', activeSelected?.historyId],
     enabled: !!activeSelected,
-    queryFn: () => unwrap<{ chunks: { content: string }[]; outputTruncated: boolean }>(api.get(`/api/commands/executions/${activeSelected!.id}/output?fromSequence=1&limit=100`)),
+    queryFn: () => unwrap<{ chunks: { content: string }[]; outputTruncated: boolean }>(api.get(`/api/command-history/items/${encodeURIComponent(activeSelected!.historyId)}/output?fromSequence=1&limit=100`)),
     refetchInterval: activeSelected?.status === 'RUNNING' ? 1000 : false
   });
   const rerun = useMutation({
-    mutationFn: (row: CommandExecution) => unwrap<CommandExecution>(api.post(`/api/commands/executions/${row.id}/rerun`, {
+    mutationFn: (row: CommandHistoryItem) => unwrap<CommandExecution>(api.post(`/api/commands/executions/${localExecutionId(row)}/rerun`, {
       targetId: row.targetId,
       command: row.command,
       timeoutSeconds: 30,
@@ -45,11 +63,27 @@ export default function CommandsPage() {
       keepHistory: true
     })),
     onSuccess: async (execution) => {
-      setSelected(execution);
+      setSelected({
+        historyId: `local:${execution.id}`,
+        origin: 'LOCAL',
+        command: execution.command,
+        targetId: execution.targetId,
+        targetSnapshot: execution.targetSnapshot,
+        status: execution.status,
+        durationMs: execution.durationMs,
+        source: execution.source,
+        operatorName: execution.operatorName,
+        executedAt: execution.executedAt,
+        outputSizeBytes: execution.outputSizeBytes,
+        outputTruncated: execution.outputTruncated,
+        errorMessage: execution.errorMessage,
+        riskLevel: execution.riskLevel,
+        riskConfirmed: execution.riskConfirmed
+      });
       message.success('已提交再次执行');
-      await queryClient.invalidateQueries({ queryKey: ['command-executions'] });
-      await queryClient.invalidateQueries({ queryKey: ['command-execution', execution.id] });
-      await queryClient.invalidateQueries({ queryKey: ['command-output', execution.id] });
+      await queryClient.invalidateQueries({ queryKey: ['command-history'] });
+      await queryClient.invalidateQueries({ queryKey: ['command-history-detail', `local:${execution.id}`] });
+      await queryClient.invalidateQueries({ queryKey: ['command-history-output', `local:${execution.id}`] });
     },
     onError: (error) => {
       message.error(error instanceof Error ? error.message : '再次执行失败');
@@ -62,8 +96,58 @@ export default function CommandsPage() {
       Modal.destroyAll();
     }
   });
+  const exportHistory = useMutation({
+    mutationFn: async () => api.post('/api/command-history/exports', {
+      historyIds: selectedRowKeys.map(String)
+    }, { responseType: 'blob' }),
+    onSuccess: (response) => {
+      const blob = new Blob([response.data], { type: 'application/zip' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filenameFromDisposition(response.headers['content-disposition']) ?? 'fordring-command-history.zip';
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      message.success('导出完成');
+    },
+    onError: (error) => {
+      message.error(error instanceof Error ? error.message : '导出失败');
+    }
+  });
+  const previewImport = useMutation({
+    mutationFn: async (file: File) => {
+      const formData = new FormData();
+      formData.append('file', file);
+      return unwrap<ImportPreview>(api.post('/api/command-history/imports/preview', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      }));
+    },
+    onSuccess: (preview) => {
+      setImportPreview(preview);
+      message.success('导入包校验通过');
+    },
+    onError: (error) => {
+      message.error(error instanceof Error ? error.message : '导入预览失败');
+    }
+  });
+  const confirmImport = useMutation({
+    mutationFn: async (fileToken: string) => unwrap<ImportResult>(api.post('/api/command-history/imports', { fileToken })),
+    onSuccess: async (result) => {
+      message.success(`导入完成：新增 ${result.importedCount} 条，跳过重复 ${result.skippedDuplicateCount} 条`);
+      setImportOpen(false);
+      setImportFile(undefined);
+      setImportPreview(undefined);
+      setOrigin('IMPORTED');
+      await queryClient.invalidateQueries({ queryKey: ['command-history'] });
+    },
+    onError: (error) => {
+      message.error(error instanceof Error ? error.message : '导入失败');
+    }
+  });
 
-  const openSave = (row: CommandExecution) => {
+  const openSave = (row: CommandHistoryItem) => {
     saveForm.setFieldsValue({ name: row.command, command: row.command, visibleInConsole: true });
     Modal.confirm({
       title: '保存命令',
@@ -99,28 +183,80 @@ export default function CommandsPage() {
       </div>
       <div className="panel" style={{ marginTop: 34 }}>
         <div className="toolbar">
-          <Input prefix={<Search size={16} />} placeholder="搜索命令" style={{ width: 280 }} />
-          <Select defaultValue="全部目标" style={{ width: 220 }} options={[{ value: '全部目标', label: '全部目标' }]} />
-          <Select defaultValue="全部状态" style={{ width: 180 }} options={[{ value: '全部状态', label: '全部状态' }]} />
+          <Input prefix={<Search size={16} />} placeholder="搜索命令" value={keyword} onChange={(event) => {
+            setKeyword(event.target.value);
+            setPage(1);
+          }} style={{ width: 280 }} />
+          <Select value={origin} onChange={(value) => {
+            setOrigin(value);
+            setPage(1);
+          }} style={{ width: 160 }} options={[
+            { value: 'ALL', label: '全部来源' },
+            { value: 'LOCAL', label: '本地执行' },
+            { value: 'IMPORTED', label: '导入记录' }
+          ]} />
+          <Select value={status} onChange={(value) => {
+            setStatus(value);
+            setPage(1);
+          }} style={{ width: 180 }} options={[
+            { value: 'ALL', label: '全部状态' },
+            { value: 'SUCCESS', label: '成功' },
+            { value: 'FAILED', label: '失败' },
+            { value: 'TIMEOUT', label: '超时' },
+            { value: 'STOPPED', label: '已停止' },
+            { value: 'CANCELLED', label: '已取消' },
+            { value: 'RUNNING', label: '运行中' }
+          ]} />
           <DatePicker.RangePicker />
           <div className="spacer" />
-          <Button icon={<RefreshCw size={16} />}>重置</Button>
+          <Button icon={<Download size={16} />} disabled={selectedRowKeys.length === 0} loading={exportHistory.isPending} onClick={() => exportHistory.mutate()}>
+            导出
+          </Button>
+          <Button icon={<UploadIcon size={16} />} onClick={() => setImportOpen(true)}>导入</Button>
+          <Button icon={<RefreshCw size={16} />} onClick={() => {
+            setKeyword('');
+            setOrigin('ALL');
+            setStatus('ALL');
+            setPage(1);
+            setSelectedRowKeys([]);
+          }}>重置</Button>
         </div>
         <Table
-          rowKey="id"
-          loading={executions.isLoading}
-          dataSource={executions.data?.items ?? []}
-          pagination={{ pageSize: 10, total: executions.data?.total ?? 0 }}
+          rowKey="historyId"
+          loading={histories.isLoading}
+          rowSelection={{
+            selectedRowKeys,
+            onChange: setSelectedRowKeys
+          }}
+          dataSource={histories.data?.items ?? []}
+          pagination={{
+            current: page,
+            pageSize,
+            total: histories.data?.total ?? 0,
+            showSizeChanger: true,
+            showTotal: (total) => `共 ${total} 条`,
+            onChange: (nextPage, nextPageSize) => {
+              setPage(nextPage);
+              setPageSize(nextPageSize);
+            }
+          }}
           columns={[
             {
               title: '命令',
               dataIndex: 'command',
+              width: 360,
+              render: (value) => <span style={{ display: 'inline-block', maxWidth: 360, whiteSpace: 'normal', wordBreak: 'break-all' }}>{value}</span>,
               sorter: (left, right) => left.command.localeCompare(right.command)
             },
             {
               title: '目标',
               render: (_, row) => targetName(row, targetNameById),
               sorter: (left, right) => targetName(left, targetNameById).localeCompare(targetName(right, targetNameById))
+            },
+            {
+              title: '来源环境',
+              render: (_, row) => row.originalSourceEnvironmentName ?? (row.origin === 'LOCAL' ? '本地环境' : '-'),
+              sorter: (left, right) => (left.originalSourceEnvironmentName ?? '').localeCompare(right.originalSourceEnvironmentName ?? '')
             },
             {
               title: '执行时间',
@@ -149,9 +285,11 @@ export default function CommandsPage() {
               render: (_, row) => (
                 <Space>
                   <Button type="link" onClick={() => setSelected(row)}>详情</Button>
-                  <Button type="link" loading={rerun.isPending && rerun.variables?.id === row.id} onClick={() => rerun.mutate(row)}>再次执行</Button>
+                  {row.origin === 'LOCAL' && (
+                    <Button type="link" loading={rerun.isPending && rerun.variables?.historyId === row.historyId} onClick={() => rerun.mutate(row)}>再次执行</Button>
+                  )}
                   <Button type="link" onClick={() => openSave(row)}>保存</Button>
-                  <Link to={`/console/${row.targetId}`}>控制台</Link>
+                  {row.origin === 'LOCAL' && row.targetId && <Link to={`/console/${row.targetId}`}>控制台</Link>}
                 </Space>
               )
             }
@@ -167,6 +305,8 @@ export default function CommandsPage() {
         {activeSelected && (
           <>
             <p><strong>命令：</strong>{activeSelected.command}</p>
+            <p><strong>记录来源：</strong>{activeSelected.origin === 'LOCAL' ? '本地执行' : '导入记录'}</p>
+            <p><strong>来源环境：</strong>{activeSelected.originalSourceEnvironmentName ?? '-'}</p>
             <p><strong>执行时间：</strong>{formatDateTime(activeSelected.executedAt)}</p>
             <p><strong>状态：</strong><CommandStatusTag status={activeSelected.status} /></p>
             <p><strong>耗时：</strong>{formatDuration(activeSelected.durationMs)}</p>
@@ -177,8 +317,80 @@ export default function CommandsPage() {
           </>
         )}
       </Drawer>
+      <Modal
+        title="导入命令历史"
+        open={importOpen}
+        onCancel={() => {
+          setImportOpen(false);
+          setImportFile(undefined);
+          setImportPreview(undefined);
+        }}
+        okText={importPreview ? '确认导入' : '校验导入包'}
+        confirmLoading={previewImport.isPending || confirmImport.isPending}
+        onOk={async () => {
+          if (!importPreview) {
+            if (!importFile) {
+              message.warning('请选择 zip 文件');
+              return;
+            }
+            await previewImport.mutateAsync(importFile);
+            return;
+          }
+          await confirmImport.mutateAsync(importPreview.fileToken);
+        }}
+      >
+        <AntUpload
+          accept=".zip,application/zip"
+          maxCount={1}
+          beforeUpload={(file) => {
+            setImportFile(file);
+            setImportPreview(undefined);
+            return false;
+          }}
+          onRemove={() => {
+            setImportFile(undefined);
+            setImportPreview(undefined);
+          }}
+        >
+          <Button icon={<UploadIcon size={16} />}>选择 zip 文件</Button>
+        </AntUpload>
+        {importPreview && (
+          <div style={{ marginTop: 20, lineHeight: 1.9 }}>
+            <div><strong>导出环境：</strong>{importPreview.exportingEnvironmentName}</div>
+            <div><strong>导出时间：</strong>{formatDateTime(importPreview.exportedAt)}</div>
+            <div><strong>导出人：</strong>{importPreview.exportedBy}</div>
+            <div><strong>记录数：</strong>{importPreview.recordCount}</div>
+            <div><strong>输出大小：</strong>{formatBytes(importPreview.outputSizeBytes)}</div>
+            <div><strong>重复记录：</strong>{importPreview.duplicateCount}</div>
+            {importPreview.warnings.map((warning) => (
+              <div key={warning} style={{ color: '#ad6800' }}>{warning}</div>
+            ))}
+          </div>
+        )}
+      </Modal>
     </>
   );
+}
+
+interface ImportPreview {
+  fileToken: string;
+  schemaVersion: string;
+  exportingEnvironmentName: string;
+  exportingEnvironmentId: string;
+  exportedAt: string;
+  exportedBy: string;
+  recordCount: number;
+  outputSizeBytes: number;
+  duplicateCount: number;
+  invalidCount: number;
+  warnings: string[];
+}
+
+interface ImportResult {
+  importBatchId: number;
+  importedCount: number;
+  skippedDuplicateCount: number;
+  failedCount: number;
 }
 
 function formatDateTime(value?: string) {
@@ -207,8 +419,52 @@ function timestamp(value?: string) {
   return date.isValid() ? date.valueOf() : 0;
 }
 
-function targetName(row: CommandExecution, targetNameById: Map<number, string>) {
-  return targetNameById.get(row.targetId) ?? `目标 #${row.targetId}`;
+function targetName(row: CommandHistoryItem, targetNameById: Map<number, string>) {
+  if (row.targetId) {
+    return targetNameById.get(row.targetId) ?? `目标 #${row.targetId}`;
+  }
+  const snapshot = parseSnapshot(row.targetSnapshot);
+  return snapshot?.name ?? snapshot?.host ?? '导入目标';
+}
+
+function parseSnapshot(value?: string): any {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function localExecutionId(row: CommandHistoryItem) {
+  if (!row.historyId.startsWith('local:')) {
+    throw new Error('导入记录不能再次执行');
+  }
+  return row.historyId.slice('local:'.length);
+}
+
+function filenameFromDisposition(value?: string) {
+  if (!value) {
+    return undefined;
+  }
+  const utf8Match = value.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match) {
+    return decodeURIComponent(utf8Match[1]);
+  }
+  const match = value.match(/filename="?([^"]+)"?/i);
+  return match?.[1];
+}
+
+function formatBytes(value: number) {
+  if (value < 1024) {
+    return `${value} B`;
+  }
+  if (value < 1024 * 1024) {
+    return `${(value / 1024).toFixed(1)} KB`;
+  }
+  return `${(value / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function formatCommandOutput(command: string, content: string): ReactNode {

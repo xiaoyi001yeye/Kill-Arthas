@@ -51,6 +51,31 @@ export interface CommandExecution {
   riskConfirmed: boolean;
 }
 
+export interface CommandHistoryItem {
+  historyId: string;
+  origin: 'LOCAL' | 'IMPORTED';
+  command: string;
+  targetId?: number;
+  targetSnapshot: string;
+  originalSourceEnvironmentId?: string;
+  originalSourceEnvironmentName?: string;
+  directSourceEnvironmentId?: string;
+  directSourceEnvironmentName?: string;
+  status: CommandStatus;
+  durationMs?: number;
+  source: CommandSource;
+  operatorName: string;
+  executedAt: string;
+  outputSizeBytes: number;
+  outputTruncated: boolean;
+  errorMessage?: string;
+  riskLevel: RiskLevel;
+  riskConfirmed: boolean;
+  importBatchId?: number;
+  importedAt?: string;
+  provenanceChain?: string;
+}
+
 export interface SavedCommand {
   id: number;
   name: string;

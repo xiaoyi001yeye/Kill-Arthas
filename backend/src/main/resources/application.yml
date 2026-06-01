@@ -20,12 +20,23 @@ spring:
 
 fordring:
   version: 0.1.0
+  instance:
+    id: ${FORDRING_INSTANCE_ID:fordring-local}
+    name: ${FORDRING_INSTANCE_NAME:本地环境}
+    base-url: ${FORDRING_INSTANCE_BASE_URL:}
   operator:
     default-name: ${FORDRING_OPERATOR_NAME:admin}
   command:
     default-timeout-seconds: ${FORDRING_COMMAND_DEFAULT_TIMEOUT_SECONDS:30}
     output-max-bytes: ${FORDRING_OUTPUT_MAX_BYTES:1048576}
     output-chunk-bytes: ${FORDRING_OUTPUT_CHUNK_BYTES:8192}
+  command-history:
+    export-max-records: ${FORDRING_COMMAND_HISTORY_EXPORT_MAX_RECORDS:500}
+    export-max-bytes: ${FORDRING_COMMAND_HISTORY_EXPORT_MAX_BYTES:52428800}
+    import-max-bytes: ${FORDRING_COMMAND_HISTORY_IMPORT_MAX_BYTES:52428800}
+    import-max-uncompressed-bytes: ${FORDRING_COMMAND_HISTORY_IMPORT_MAX_UNCOMPRESSED_BYTES:104857600}
+    import-max-entry-count: ${FORDRING_COMMAND_HISTORY_IMPORT_MAX_ENTRY_COUNT:5000}
+    import-preview-ttl-minutes: ${FORDRING_COMMAND_HISTORY_IMPORT_PREVIEW_TTL_MINUTES:30}
   arthas:
     default-telnet-port: ${FORDRING_ARTHAS_TELNET_PORT:3658}
     default-http-port: ${FORDRING_ARTHAS_HTTP_PORT:8563}

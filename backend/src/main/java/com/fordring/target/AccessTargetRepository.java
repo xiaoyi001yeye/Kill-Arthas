@@ -8,7 +8,6 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface AccessTargetRepository extends JpaRepository<AccessTarget, Long> {
     long countByArthasStatus(ArthasStatus status);
 
-    Page<AccessTarget> findByNameContainingIgnoreCaseOrHostContainingIgnoreCaseOrProcessNameContainingIgnoreCase(
-            String name, String host, String processName, Pageable pageable);
+    Page<AccessTarget> findByNameContainingIgnoreCaseOrHostContainingIgnoreCaseOrProcessNameContainingIgnoreCaseOrContainerNameContainingIgnoreCase(
+            String name, String host, String processName, String containerName, Pageable pageable);
 }
-

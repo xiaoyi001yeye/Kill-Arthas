@@ -29,8 +29,10 @@ public class AccessTargetController {
     @GetMapping
     public ApiResponse<PageResult<AccessTargetDto>> list(@RequestParam(required = false) String keyword,
                                                          @RequestParam(defaultValue = "1") int page,
-                                                         @RequestParam(defaultValue = "10") int pageSize) {
-        return ApiResponse.ok(service.list(keyword, page, pageSize));
+                                                         @RequestParam(defaultValue = "10") int pageSize,
+                                                         @RequestParam(required = false) String sortField,
+                                                         @RequestParam(required = false) String sortOrder) {
+        return ApiResponse.ok(service.list(keyword, page, pageSize, sortField, sortOrder));
     }
 
     @PostMapping
