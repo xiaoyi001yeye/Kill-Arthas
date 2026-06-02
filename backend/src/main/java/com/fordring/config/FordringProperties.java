@@ -11,6 +11,7 @@ public class FordringProperties {
     public final Arthas arthas = new Arthas();
     public final Access access = new Access();
     public final Cors cors = new Cors();
+    public final Standalone standalone = new Standalone();
 
     public static class Instance {
         public String id = "fordring-local";
@@ -26,6 +27,7 @@ public class FordringProperties {
         public int defaultTimeoutSeconds = 30;
         public long outputMaxBytes = 1_048_576;
         public int outputChunkBytes = 8192;
+        public int maxRunningExecutions;
     }
 
     public static class CommandHistory {
@@ -35,6 +37,7 @@ public class FordringProperties {
         public long importMaxUncompressedBytes = 104_857_600;
         public int importMaxEntryCount = 5000;
         public int importPreviewTtlMinutes = 30;
+        public int maxLocalRecords;
     }
 
     public static class Arthas {
@@ -46,9 +49,15 @@ public class FordringProperties {
 
     public static class Access {
         public int defaultSshPort = 22;
+        public int maxTargets;
     }
 
     public static class Cors {
         public String allowedOrigins = "http://localhost:5173";
+    }
+
+    public static class Standalone {
+        public boolean enabled;
+        public String dataDir = "./fordring-data";
     }
 }

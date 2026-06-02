@@ -4,6 +4,7 @@
 backend/target/
 backend/logs/*.log
 backend/logs/*.log.*
+backend/fordring-data/
 
 # Node
 frontend/node_modules/

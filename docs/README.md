@@ -13,3 +13,4 @@ Fordring，全称 Tirion Fordring，是一个面向 Java 运行时诊断的 Arth
 - [Arthas 控制台终端交互设计](./arthas-console-terminal-design.md)：说明前端控制台、WebSocket、真实 Arthas HTTP API、attach/detach 和 xterm.js 演进方案。
 - [Arthas 控制台实现完成度清单](./arthas-console-implementation-status.md)：对照当前代码梳理已完成能力、未完成能力和建议优先级。
 - [命令历史跨环境导出导入设计](./command-history-export-import-design.md)：设计 A/B 环境间选中命令历史导出、导入、查看、去重和审计方案。
+- [单 JAR 独立部署设计](./single-jar-standalone-deployment-design.md)：设计无需 PostgreSQL、Redis、Nginx 或独立前端服务的 standalone 交付方式。

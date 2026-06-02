@@ -7,6 +7,8 @@ import com.fordring.common.enums.TargetType;
 import com.fordring.config.FordringProperties;
 import com.fordring.credential.CredentialService;
 import com.fordring.arthas.ArthasInstallationService;
+import com.fordring.standalone.StandaloneArthasOwnershipTracker;
+import com.fordring.standalone.StandaloneLifecycle;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
@@ -21,15 +23,21 @@ public class AccessTargetService {
     private final AuditService auditService;
     private final FordringProperties properties;
     private final ArthasInstallationService arthasInstallationService;
+    private final StandaloneArthasOwnershipTracker ownershipTracker;
+    private final StandaloneLifecycle standaloneLifecycle;
 
     public AccessTargetService(AccessTargetRepository repository, CredentialService credentialService,
                                AuditService auditService, FordringProperties properties,
-                               ArthasInstallationService arthasInstallationService) {
+                               ArthasInstallationService arthasInstallationService,
+                               StandaloneArthasOwnershipTracker ownershipTracker,
+                               StandaloneLifecycle standaloneLifecycle) {
         this.repository = repository;
         this.credentialService = credentialService;
         this.auditService = auditService;
         this.properties = properties;
         this.arthasInstallationService = arthasInstallationService;
+        this.ownershipTracker = ownershipTracker;
+        this.standaloneLifecycle = standaloneLifecycle;
     }
 
     public record CredentialInput(String name, String secret) {
@@ -65,6 +73,9 @@ public class AccessTargetService {
 
     @Transactional
     public AccessTargetDto create(CreateAccessTargetRequest request, String operatorName) {
+        if (properties.access.maxTargets > 0 && repository.count() >= properties.access.maxTargets) {
+            throw new IllegalArgumentException("接入目标数量已达到上限：" + properties.access.maxTargets);
+        }
         var now = Instant.now();
         var target = new AccessTarget();
         target.name = required(request.name(), "接入名称不能为空");
@@ -147,11 +158,15 @@ public class AccessTargetService {
 
     @Transactional
     public AccessTargetDto attach(Long id, Integer telnetPort, Integer httpPort, Boolean forceRestart, String operatorName) {
+        standaloneLifecycle.requireAcceptingRequests();
         var target = get(id);
         target.telnetPort = telnetPort == null ? target.telnetPort : telnetPort;
         target.httpPort = httpPort == null ? target.httpPort : httpPort;
         try {
-            arthasInstallationService.attach(target, Boolean.TRUE.equals(forceRestart), operatorName);
+            var result = arthasInstallationService.attach(target, Boolean.TRUE.equals(forceRestart), operatorName);
+            if (properties.standalone.enabled) {
+                ownershipTracker.record(id, result.attachedByCurrentRequest());
+            }
             target.arthasStatus = ArthasStatus.ATTACHED;
             target.latestOperationTime = Instant.now();
             target.latestFailureReason = null;
@@ -185,6 +200,7 @@ public class AccessTargetService {
         var target = get(id);
         try {
             arthasInstallationService.detach(target, operatorName);
+            ownershipTracker.remove(id);
             target.arthasStatus = ArthasStatus.DISCONNECTED;
             target.latestOperationTime = Instant.now();
             target.latestFailureReason = null;

@@ -9,6 +9,7 @@ import type { AccessTarget, CommandExecution, CommandHistoryItem, PageResult } f
 import { CommandStatusTag } from '../ui/StatusTag';
 
 const TRACE_HOT_NODE_PERCENT = 80;
+const standalone = import.meta.env.VITE_FORDRING_MODE === 'standalone';
 
 export default function CommandsPage() {
   const [selected, setSelected] = useState<CommandHistoryItem>();
@@ -212,7 +213,7 @@ export default function CommandsPage() {
           <Button icon={<Download size={16} />} disabled={selectedRowKeys.length === 0} loading={exportHistory.isPending} onClick={() => exportHistory.mutate()}>
             导出
           </Button>
-          <Button icon={<UploadIcon size={16} />} onClick={() => setImportOpen(true)}>导入</Button>
+          {!standalone && <Button icon={<UploadIcon size={16} />} onClick={() => setImportOpen(true)}>导入</Button>}
           <Button icon={<RefreshCw size={16} />} onClick={() => {
             setKeyword('');
             setOrigin('ALL');

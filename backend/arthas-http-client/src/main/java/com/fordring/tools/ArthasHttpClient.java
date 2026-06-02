@@ -6,6 +6,12 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.zip.ZipInputStream;
 
 public class ArthasHttpClient {
     private static final int EXIT_HTTP_ERROR = 22;
@@ -14,7 +20,7 @@ public class ArthasHttpClient {
 
     public static void main(String[] args) {
         try {
-            execute();
+            execute(args);
         } catch (IllegalArgumentException error) {
             System.err.println(error.getMessage());
             System.exit(EXIT_ARGUMENT_ERROR);
@@ -27,7 +33,28 @@ public class ArthasHttpClient {
         }
     }
 
-    private static void execute() throws Exception {
+    private static void execute(String[] args) throws Exception {
+        if (args.length > 0) {
+            executeTool(args);
+            return;
+        }
+        executeHttpRequest();
+    }
+
+    private static void executeTool(String[] args) throws Exception {
+        if (args.length == 2 && "--sha256".equals(args[0])) {
+            System.out.println(sha256(Path.of(args[1])));
+            return;
+        }
+        if (args.length == 3 && "--extract-zip".equals(args[0])) {
+            extractZip(Path.of(args[1]), Path.of(args[2]));
+            System.out.println("FORDRING_ARTHAS_ZIP_EXTRACTED");
+            return;
+        }
+        throw new IllegalArgumentException("Expected no arguments, --sha256 <file>, or --extract-zip <zip> <directory>");
+    }
+
+    private static void executeHttpRequest() throws Exception {
         String url = env("FORDRING_ARTHAS_URL");
         String payload = env("FORDRING_ARTHAS_PAYLOAD");
         String authorization = System.getenv("FORDRING_ARTHAS_AUTHORIZATION");
@@ -67,6 +94,43 @@ public class ArthasHttpClient {
         int read;
         while ((read = input.read(buffer)) >= 0) {
             output.write(buffer, 0, read);
+        }
+    }
+
+    private static String sha256(Path path) throws IOException, NoSuchAlgorithmException {
+        MessageDigest digest = MessageDigest.getInstance("SHA-256");
+        try (InputStream input = Files.newInputStream(path)) {
+            byte[] buffer = new byte[8_192];
+            int read;
+            while ((read = input.read(buffer)) >= 0) {
+                digest.update(buffer, 0, read);
+            }
+        }
+        StringBuilder value = new StringBuilder();
+        for (byte current : digest.digest()) {
+            value.append(String.format("%02x", current));
+        }
+        return value.toString();
+    }
+
+    private static void extractZip(Path zip, Path destination) throws IOException {
+        Path normalizedDestination = destination.toAbsolutePath().normalize();
+        Files.createDirectories(normalizedDestination);
+        try (ZipInputStream input = new ZipInputStream(Files.newInputStream(zip))) {
+            java.util.zip.ZipEntry entry;
+            while ((entry = input.getNextEntry()) != null) {
+                Path target = normalizedDestination.resolve(entry.getName()).normalize();
+                if (!target.startsWith(normalizedDestination)) {
+                    throw new IOException("ZIP entry escapes destination: " + entry.getName());
+                }
+                if (entry.isDirectory()) {
+                    Files.createDirectories(target);
+                } else {
+                    Files.createDirectories(target.getParent());
+                    Files.copy(input, target, StandardCopyOption.REPLACE_EXISTING);
+                }
+                input.closeEntry();
+            }
         }
     }
 

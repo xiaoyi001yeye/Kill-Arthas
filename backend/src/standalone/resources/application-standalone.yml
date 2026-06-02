@@ -1,0 +1,22 @@
+server:
+  address: 0.0.0.0
+
+spring:
+  datasource:
+    url: jdbc:h2:mem:fordring;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_NULL_ORDERING=HIGH;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+    driver-class-name: org.h2.Driver
+  flyway:
+    locations: classpath:db/migration-h2
+
+fordring:
+  standalone:
+    enabled: true
+    data-dir: ${FORDRING_DATA_DIR:./fordring-data}
+  command:
+    max-running-executions: ${FORDRING_COMMAND_MAX_RUNNING_EXECUTIONS:20}
+  command-history:
+    max-local-records: ${FORDRING_COMMAND_HISTORY_MAX_LOCAL_RECORDS:1000}
+  access:
+    max-targets: ${FORDRING_ACCESS_MAX_TARGETS:100}

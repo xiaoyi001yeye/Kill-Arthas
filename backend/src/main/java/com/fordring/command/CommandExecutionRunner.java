@@ -4,6 +4,7 @@ import com.fordring.arthas.ArthasHttpCommandClient;
 import com.fordring.common.enums.CommandStatus;
 import com.fordring.config.FordringProperties;
 import com.fordring.target.AccessTargetService;
+import com.fordring.standalone.StandaloneLifecycle;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -15,6 +16,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
+import java.util.concurrent.Semaphore;
+import jakarta.annotation.PreDestroy;
 
 @Component
 public class CommandExecutionRunner {
@@ -24,18 +27,42 @@ public class CommandExecutionRunner {
     private final AccessTargetService targetService;
     private final ArthasHttpCommandClient arthasHttpCommandClient;
     private final FordringProperties properties;
-    private final ExecutorService executor = Executors.newCachedThreadPool();
+    private final StandaloneLifecycle standaloneLifecycle;
+    private final ExecutorService executor = Executors.newCachedThreadPool(task -> {
+        var thread = new Thread(task, "fordring-command-runner");
+        thread.setDaemon(true);
+        return thread;
+    });
     private final ConcurrentMap<Long, RunningTask> runningTasks = new ConcurrentHashMap<>();
+    private final Semaphore executionSlots;
 
     public CommandExecutionRunner(CommandService commandService, AccessTargetService targetService,
-                                  ArthasHttpCommandClient arthasHttpCommandClient, FordringProperties properties) {
+                                  ArthasHttpCommandClient arthasHttpCommandClient, FordringProperties properties,
+                                  StandaloneLifecycle standaloneLifecycle) {
         this.commandService = commandService;
         this.targetService = targetService;
         this.arthasHttpCommandClient = arthasHttpCommandClient;
         this.properties = properties;
+        this.standaloneLifecycle = standaloneLifecycle;
+        this.executionSlots = new Semaphore(properties.command.maxRunningExecutions > 0
+                ? properties.command.maxRunningExecutions
+                : Integer.MAX_VALUE);
     }
 
     public CommandExecution start(CommandService.ExecuteRequest request, String operatorName, Listener listener) {
+        standaloneLifecycle.requireAcceptingRequests();
+        if (!executionSlots.tryAcquire()) {
+            throw new IllegalArgumentException("运行中命令数量已达到上限：" + properties.command.maxRunningExecutions);
+        }
+        try {
+            return startWithReservedSlot(request, operatorName, listener);
+        } catch (RuntimeException error) {
+            executionSlots.release();
+            throw error;
+        }
+    }
+
+    private CommandExecution startWithReservedSlot(CommandService.ExecuteRequest request, String operatorName, Listener listener) {
         var timeoutSeconds = request.timeoutSeconds() == null
                 ? properties.command.defaultTimeoutSeconds
                 : request.timeoutSeconds();
@@ -116,7 +143,18 @@ public class CommandExecutionRunner {
             }
         } finally {
             runningTasks.remove(execution.id);
+            executionSlots.release();
         }
+    }
+
+    public void stopAll() {
+        runningTasks.keySet().forEach(this::stop);
+    }
+
+    @PreDestroy
+    public void shutdownExecutor() {
+        stopAll();
+        executor.shutdownNow();
     }
 
     private static String preview(String value) {

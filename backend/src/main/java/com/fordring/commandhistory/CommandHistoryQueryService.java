@@ -88,9 +88,9 @@ public class CommandHistoryQueryService {
                     error_message,
                     risk_level,
                     risk_confirmed,
-                    NULL::bigint AS import_batch_id,
-                    NULL::timestamptz AS imported_at,
-                    NULL::text AS provenance_chain
+                    CAST(NULL AS BIGINT) AS import_batch_id,
+                    CAST(NULL AS TIMESTAMP WITH TIME ZONE) AS imported_at,
+                    CAST(NULL AS TEXT) AS provenance_chain
                   FROM command_execution
                   UNION ALL
                   SELECT

@@ -19,6 +19,9 @@
 
     <properties>
         <java.version>21</java.version>
+        <start-class>com.fordring.FordringApplication</start-class>
+        <arthas.package.version>4.2.0</arthas.package.version>
+        <arthas.package.sha256>2489d42868d2d71dac3893fc6c4b01cae380597eb0cd33ea36f4b243cfd9e011</arthas.package.sha256>
     </properties>
 
     <dependencies>
@@ -61,9 +64,23 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <version>2.2.220</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
+        <testResources>
+            <testResource>
+                <directory>src/main/resources</directory>
+            </testResource>
+            <testResource>
+                <directory>src/standalone/resources</directory>
+            </testResource>
+        </testResources>
         <plugins>
             <plugin>
                 <artifactId>maven-antrun-plugin</artifactId>
@@ -102,4 +119,134 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <profile>
+            <id>standalone</id>
+            <properties>
+                <start-class>com.fordring.standalone.FordringStandaloneApplication</start-class>
+            </properties>
+            <dependencies>
+                <dependency>
+                    <groupId>com.h2database</groupId>
+                    <artifactId>h2</artifactId>
+                    <version>2.2.220</version>
+                    <scope>runtime</scope>
+                </dependency>
+            </dependencies>
+            <build>
+                <finalName>fordring-standalone-${project.version}</finalName>
+                <resources>
+                    <resource>
+                        <directory>src/main/resources</directory>
+                    </resource>
+                    <resource>
+                        <directory>src/standalone/resources</directory>
+                    </resource>
+                </resources>
+                <plugins>
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>exec-maven-plugin</artifactId>
+                        <version>3.5.0</version>
+                        <executions>
+                            <execution>
+                                <id>build-standalone-frontend</id>
+                                <phase>generate-resources</phase>
+                                <goals>
+                                    <goal>exec</goal>
+                                </goals>
+                                <configuration>
+                                    <executable>npm</executable>
+                                    <workingDirectory>${project.basedir}/../frontend</workingDirectory>
+                                    <arguments>
+                                        <argument>run</argument>
+                                        <argument>build:standalone</argument>
+                                    </arguments>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-resources-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>copy-standalone-frontend</id>
+                                <phase>process-resources</phase>
+                                <goals>
+                                    <goal>copy-resources</goal>
+                                </goals>
+                                <configuration>
+                                    <outputDirectory>${project.build.outputDirectory}/static</outputDirectory>
+                                    <resources>
+                                        <resource>
+                                            <directory>${project.basedir}/../frontend/dist</directory>
+                                        </resource>
+                                    </resources>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <artifactId>maven-antrun-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>download-fixed-arthas-package</id>
+                                <phase>process-resources</phase>
+                                <goals>
+                                    <goal>run</goal>
+                                </goals>
+                                <configuration>
+                                    <target unless="arthas.package.local.path">
+                                        <mkdir dir="${project.build.outputDirectory}/tools"/>
+                                        <get
+                                                src="https://maven.aliyun.com/repository/public/com/taobao/arthas/arthas-packaging/${arthas.package.version}/arthas-packaging-${arthas.package.version}-bin.zip"
+                                                dest="${project.build.outputDirectory}/tools/arthas-bin.zip"
+                                                retries="3"
+                                                verbose="true"/>
+                                    </target>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>copy-local-fixed-arthas-package</id>
+                                <phase>process-resources</phase>
+                                <goals>
+                                    <goal>run</goal>
+                                </goals>
+                                <configuration>
+                                    <target if="arthas.package.local.path">
+                                        <mkdir dir="${project.build.outputDirectory}/tools"/>
+                                        <copy
+                                                file="${arthas.package.local.path}"
+                                                tofile="${project.build.outputDirectory}/tools/arthas-bin.zip"/>
+                                    </target>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>verify-fixed-arthas-package</id>
+                                <phase>prepare-package</phase>
+                                <goals>
+                                    <goal>run</goal>
+                                </goals>
+                                <configuration>
+                                    <target>
+                                        <checksum
+                                                file="${project.build.outputDirectory}/tools/arthas-bin.zip"
+                                                algorithm="SHA-256"
+                                                property="arthas.package.sha256.actual"/>
+                                        <condition property="arthas.package.sha256.matches">
+                                            <equals arg1="${arthas.package.sha256.actual}" arg2="${arthas.package.sha256}"/>
+                                        </condition>
+                                        <fail unless="arthas.package.sha256.matches"
+                                              message="arthas-bin.zip SHA-256 mismatch: expected ${arthas.package.sha256}, actual ${arthas.package.sha256.actual}"/>
+                                    </target>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

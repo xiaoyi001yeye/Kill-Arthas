@@ -143,7 +143,7 @@ public class ArthasHttpCommandClient {
     }
 
     private JsonNode post(AccessTarget target, ObjectNode payload) throws IOException, InterruptedException {
-        if (target.targetType == TargetType.DOCKER_CONTAINER) {
+        if (properties.standalone.enabled || target.targetType == TargetType.DOCKER_CONTAINER) {
             return postViaTargetShell(target, payload);
         }
         return postDirect(target, payload);

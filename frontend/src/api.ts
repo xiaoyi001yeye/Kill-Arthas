@@ -1,7 +1,9 @@
 import axios from 'axios';
 
-const apiBaseUrl = import.meta.env.VITE_FORDRING_API_BASE_URL ?? 'http://localhost:8080';
-export const wsBaseUrl = import.meta.env.VITE_FORDRING_WS_BASE_URL ?? 'ws://localhost:8080';
+const standalone = import.meta.env.VITE_FORDRING_MODE === 'standalone';
+const apiBaseUrl = import.meta.env.VITE_FORDRING_API_BASE_URL ?? (standalone ? '' : 'http://localhost:8080');
+export const wsBaseUrl = import.meta.env.VITE_FORDRING_WS_BASE_URL
+  ?? (standalone ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}` : 'ws://localhost:8080');
 const operatorName = import.meta.env.VITE_FORDRING_OPERATOR_NAME ?? 'admin';
 
 export type ApiResponse<T> =

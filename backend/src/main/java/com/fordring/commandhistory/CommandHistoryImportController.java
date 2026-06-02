@@ -3,11 +3,13 @@ package com.fordring.commandhistory;
 import com.fordring.common.ApiResponse;
 import com.fordring.operator.OperatorContext;
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 @RestController
 @RequestMapping("/api/command-history")
+@ConditionalOnProperty(name = "fordring.standalone.enabled", havingValue = "false", matchIfMissing = true)
 public class CommandHistoryImportController {
     private final CommandHistoryImportService importService;
     private final OperatorContext operatorContext;

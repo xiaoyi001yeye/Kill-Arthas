@@ -4,6 +4,8 @@ import com.fordring.audit.AuditService;
 import com.fordring.common.enums.TargetType;
 import com.fordring.config.FordringProperties;
 import com.fordring.target.AccessTarget;
+import com.fordring.standalone.StandaloneArthasPackageProvider;
+import org.springframework.beans.factory.ObjectProvider;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -121,8 +123,11 @@ public class ArthasInstallationService {
             HTTP_PORT=__HTTP_PORT__
             ARTHAS_USERNAME=__ARTHAS_USERNAME__
             ARTHAS_PASSWORD=__ARTHAS_PASSWORD__
+            AUTHORIZATION_HEADER=__AUTHORIZATION_HEADER__
+            ARTHAS_TARGET_IP=__ARTHAS_TARGET_IP__
             FORCE_RESTART=__FORCE_RESTART__
             LOG_FILE="/tmp/fordring-arthas-$PID.log"
+            FORDRING_HTTP_CLIENT_JAR="/tmp/fordring-arthas-http-client.jar"
             api_exec() {
               CMD="$1"
               PAYLOAD=$(printf '{"action":"exec","command":"%s","execTimeout":"2000"}' "$CMD")
@@ -140,6 +145,15 @@ public class ArthasInstallationService {
                 else
                   wget -q -O - --timeout=3 --header='Content-Type: application/json' --post-data="$PAYLOAD" "http://127.0.0.1:$HTTP_PORT/api"
                 fi
+                return $?
+              fi
+              if [ -s "$FORDRING_HTTP_CLIENT_JAR" ] && command -v java >/dev/null 2>&1; then
+                export FORDRING_ARTHAS_AUTHORIZATION="$AUTHORIZATION_HEADER"
+                export FORDRING_ARTHAS_URL="http://127.0.0.1:$HTTP_PORT/api"
+                export FORDRING_ARTHAS_PAYLOAD="$PAYLOAD"
+                export FORDRING_ARTHAS_CONNECT_TIMEOUT_MS=1000
+                export FORDRING_ARTHAS_READ_TIMEOUT_MS=3000
+                java -jar "$FORDRING_HTTP_CLIENT_JAR"
                 return $?
               fi
               echo "HTTP_CLIENT_MISSING"
@@ -164,7 +178,7 @@ public class ArthasInstallationService {
               echo "JAVA_MISSING"
               exit 20
             fi
-            if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+            if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1 && [ ! -s "$FORDRING_HTTP_CLIENT_JAR" ]; then
               echo "HTTP_CLIENT_MISSING"
               exit 21
             fi
@@ -195,9 +209,9 @@ public class ArthasInstallationService {
               exit 35
             fi
             if [ -n "$ARTHAS_PASSWORD" ]; then
-              nohup java -jar "$BOOT" --target-ip 0.0.0.0 --telnet-port "$TELNET_PORT" --http-port "$HTTP_PORT" --username "$ARTHAS_USERNAME" --password "$ARTHAS_PASSWORD" "$PID" > "$LOG_FILE" 2>&1 &
+              nohup java -jar "$BOOT" --target-ip "$ARTHAS_TARGET_IP" --telnet-port "$TELNET_PORT" --http-port "$HTTP_PORT" --username "$ARTHAS_USERNAME" --password "$ARTHAS_PASSWORD" "$PID" > "$LOG_FILE" 2>&1 &
             else
-              nohup java -jar "$BOOT" --target-ip 0.0.0.0 --telnet-port "$TELNET_PORT" --http-port "$HTTP_PORT" "$PID" > "$LOG_FILE" 2>&1 &
+              nohup java -jar "$BOOT" --target-ip "$ARTHAS_TARGET_IP" --telnet-port "$TELNET_PORT" --http-port "$HTTP_PORT" "$PID" > "$LOG_FILE" 2>&1 &
             fi
             for i in $(seq 1 45); do
               if api_ok; then
@@ -251,14 +265,27 @@ public class ArthasInstallationService {
             set -e
             HTTP_PORT=__HTTP_PORT__
             PAYLOAD='{"action":"exec","command":"stop","execTimeout":"2000"}'
+            AUTHORIZATION_HEADER=__AUTHORIZATION_HEADER__
+            FORDRING_HTTP_CLIENT_JAR="/tmp/fordring-arthas-http-client.jar"
             if command -v curl >/dev/null 2>&1; then
-              RESULT=$(curl -sS --connect-timeout 2 --max-time 5 -X POST "http://127.0.0.1:$HTTP_PORT/api" -H 'Content-Type: application/json' -d "$PAYLOAD" 2>&1) && echo "$RESULT" && echo "$RESULT" | grep -q '"state"[[:space:]]*:[[:space:]]*"SUCCEEDED"' && echo "DETACHED" && exit 0
+              RESULT=$(curl -sS --connect-timeout 2 --max-time 5 -X POST "http://127.0.0.1:$HTTP_PORT/api" -H 'Content-Type: application/json' -H "Authorization: $AUTHORIZATION_HEADER" -d "$PAYLOAD" 2>&1) && echo "$RESULT" && echo "$RESULT" | grep -q '"state"[[:space:]]*:[[:space:]]*"SUCCEEDED"' && echo "DETACHED" && exit 0
               echo "$RESULT" | grep -Eiq 'Connection refused|Failed to connect|Could not connect|Connection reset|Empty reply from server' && echo "ALREADY_DETACHED" && exit 0
               echo "$RESULT"
               exit 33
             elif command -v wget >/dev/null 2>&1; then
-              RESULT=$(wget -q -O - --timeout=5 --header='Content-Type: application/json' --post-data="$PAYLOAD" "http://127.0.0.1:$HTTP_PORT/api" 2>&1) && echo "$RESULT" && echo "$RESULT" | grep -q '"state"[[:space:]]*:[[:space:]]*"SUCCEEDED"' && echo "DETACHED" && exit 0
+              RESULT=$(wget -q -O - --timeout=5 --header='Content-Type: application/json' --header="Authorization: $AUTHORIZATION_HEADER" --post-data="$PAYLOAD" "http://127.0.0.1:$HTTP_PORT/api" 2>&1) && echo "$RESULT" && echo "$RESULT" | grep -q '"state"[[:space:]]*:[[:space:]]*"SUCCEEDED"' && echo "DETACHED" && exit 0
               echo "$RESULT" | grep -Eiq 'Connection refused|Connection reset|refused|Empty reply from server' && echo "ALREADY_DETACHED" && exit 0
+              echo "$RESULT"
+              exit 33
+            fi
+            if [ -s "$FORDRING_HTTP_CLIENT_JAR" ] && command -v java >/dev/null 2>&1; then
+              export FORDRING_ARTHAS_URL="http://127.0.0.1:$HTTP_PORT/api"
+              export FORDRING_ARTHAS_PAYLOAD="$PAYLOAD"
+              export FORDRING_ARTHAS_AUTHORIZATION="$AUTHORIZATION_HEADER"
+              export FORDRING_ARTHAS_CONNECT_TIMEOUT_MS=2000
+              export FORDRING_ARTHAS_READ_TIMEOUT_MS=5000
+              RESULT=$(java -jar "$FORDRING_HTTP_CLIENT_JAR" 2>&1) && echo "$RESULT" && echo "$RESULT" | grep -q '"state"[[:space:]]*:[[:space:]]*"SUCCEEDED"' && echo "DETACHED" && exit 0
+              echo "$RESULT" | grep -Eiq 'Connection refused|Failed to connect|Could not connect|Connection reset|Empty reply from server' && echo "ALREADY_DETACHED" && exit 0
               echo "$RESULT"
               exit 33
             fi
@@ -266,14 +293,78 @@ public class ArthasInstallationService {
             exit 21
             """;
 
+    private static final String OFFLINE_INSTALL_SCRIPT_TEMPLATE = """
+            set -e
+            SOURCE=__SOURCE__
+            EXPECTED_SHA256=__EXPECTED_SHA256__
+            BOOT="$HOME/.arthas/arthas-boot.jar"
+            VERSION_OUT="$HOME/.arthas/arthas-boot.version.$$"
+            STAGE="$HOME/.arthas/fordring-install.$$"
+            HTTP_CLIENT="/tmp/fordring-arthas-http-client.jar"
+            mkdir -p "$HOME/.arthas"
+            cleanup() {
+              rm -f "$SOURCE" "$VERSION_OUT"
+              rm -rf "$STAGE"
+            }
+            trap cleanup EXIT
+            validate_boot() {
+              java -jar "$1" --version > "$VERSION_OUT" 2>&1
+            }
+            detect_version() {
+              sed -nE 's/.*([0-9]+\\.[0-9]+\\.[0-9]+([.-][A-Za-z0-9]+)?).*/\\1/p' "$VERSION_OUT" | head -n 1
+            }
+            if ! command -v java >/dev/null 2>&1; then
+              echo "JAVA_MISSING"
+              exit 20
+            fi
+            if [ -f "$BOOT" ] && validate_boot "$BOOT"; then
+              echo "ALREADY_INSTALLED"
+              echo "source=$BOOT"
+              echo "version=$(detect_version)"
+              exit 0
+            fi
+            if [ ! -s "$HTTP_CLIENT" ]; then
+              echo "FORDRING_HTTP_CLIENT_MISSING"
+              exit 23
+            fi
+            ACTUAL_SHA256=$(java -jar "$HTTP_CLIENT" --sha256 "$SOURCE")
+            if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+              echo "SHA256_MISMATCH"
+              exit 24
+            fi
+            rm -rf "$STAGE"
+            mkdir -p "$STAGE"
+            if ! java -jar "$HTTP_CLIENT" --extract-zip "$SOURCE" "$STAGE"; then
+              echo "PACKAGE_EXTRACT_FAILED"
+              exit 25
+            fi
+            if ! validate_boot "$STAGE/arthas-boot.jar"; then
+              echo "INSTALL_VALIDATE_FAILED"
+              exit 22
+            fi
+            rm -f "$BOOT"
+            rm -rf "$HOME/.arthas/lib" "$HOME/.arthas/async-profiler"
+            cp -R "$STAGE"/. "$HOME/.arthas"/
+            if ! validate_boot "$BOOT"; then
+              echo "INSTALL_VALIDATE_FAILED"
+              exit 22
+            fi
+            echo "INSTALLED"
+            echo "source=$BOOT"
+            echo "version=$(detect_version)"
+            """;
+
     private final TargetShellExecutor shellExecutor;
     private final AuditService auditService;
     private final FordringProperties properties;
+    private final StandaloneArthasPackageProvider standalonePackageProvider;
 
-    public ArthasInstallationService(TargetShellExecutor shellExecutor, AuditService auditService, FordringProperties properties) {
+    public ArthasInstallationService(TargetShellExecutor shellExecutor, AuditService auditService, FordringProperties properties,
+                                     ObjectProvider<StandaloneArthasPackageProvider> standalonePackageProvider) {
         this.shellExecutor = shellExecutor;
         this.auditService = auditService;
         this.properties = properties;
+        this.standalonePackageProvider = standalonePackageProvider.getIfAvailable();
     }
 
     public Result check(AccessTarget target, String operatorName) {
@@ -291,7 +382,7 @@ public class ArthasInstallationService {
                     traceId, target.id, installed, result.exitStatus(), preview(result.stdout()), preview(result.stderr()));
             auditService.record("ARTHAS_INSTALLATION_CHECK", "ACCESS_TARGET", target.id, operatorName, "SUCCESS", null, null, null);
             return new Result(installed, message, cleanVersion(extractValue(result.stdout(), "version")),
-                    extractValue(result.stdout(), "source"), traceId, preview(result.stdout()));
+                    extractValue(result.stdout(), "source"), traceId, preview(result.stdout()), false);
         } catch (IOException error) {
             log.error("Arthas installation check failed traceId={} targetId={} host={} sshPort={} errorType={} message={}",
                     traceId, target.id, target.host, target.sshPort, error.getClass().getName(), error.getMessage(), error);
@@ -310,6 +401,9 @@ public class ArthasInstallationService {
         log.info("Arthas installation started traceId={} targetId={} host={} sshPort={} username={} authType={} operator={} commandTimeoutSeconds={}",
                 traceId, target.id, target.host, target.sshPort, target.username, target.authType, operatorName, COMMAND_TIMEOUT.toSeconds());
         try {
+            if (properties.standalone.enabled) {
+                return installOffline(target, operatorName, traceId);
+            }
             var command = shellExecutor.buildTargetCommand(target, INSTALL_SCRIPT);
             log.info("Arthas installation command prepared traceId={} strategy={} containerName={}",
                     traceId, strategy(target), safeValue(target.containerName));
@@ -325,7 +419,7 @@ public class ArthasInstallationService {
             copyHttpClientJar(target, traceId, operatorName);
             auditService.record("ARTHAS_INSTALL", "ACCESS_TARGET", target.id, operatorName, "SUCCESS", null, null, null);
             return new Result(true, "Arthas 安装完成", extractInstalledVersion(result.stdout()),
-                    extractValue(result.stdout(), "source"), traceId, preview(result.stdout()));
+                    extractValue(result.stdout(), "source"), traceId, preview(result.stdout()), false);
         } catch (IOException error) {
             log.error("Arthas installation failed traceId={} targetId={} host={} sshPort={} errorType={} message={}",
                     traceId, target.id, target.host, target.sshPort, error.getClass().getName(), error.getMessage(), error);
@@ -348,6 +442,9 @@ public class ArthasInstallationService {
                 traceId, target.id, target.host, target.sshPort, target.processId, target.telnetPort, target.httpPort,
                 target.targetType, safeValue(target.containerName), forceRestart, operatorName);
         try {
+            if (properties.standalone.enabled) {
+                copyHttpClientJar(target, traceId, operatorName);
+            }
             var command = shellExecutor.buildTargetCommand(target, attachScript(target, forceRestart));
             log.info("Arthas attach command prepared traceId={} strategy={} containerName={}",
                     traceId, strategy(target), safeValue(target.containerName));
@@ -361,7 +458,8 @@ public class ArthasInstallationService {
                 throw new IllegalArgumentException("接入 Arthas 失败：" + message);
             }
             auditService.record("ARTHAS_ATTACH", "ACCESS_TARGET", target.id, operatorName, "SUCCESS", null, null, null);
-            return new Result(true, "Arthas 已接入", "-", "-", traceId, preview(result.stdout()));
+            var attachedByCurrentRequest = result.stdout().lines().anyMatch("ATTACHED"::equals);
+            return new Result(true, "Arthas 已接入", "-", "-", traceId, preview(result.stdout()), attachedByCurrentRequest);
         } catch (IOException error) {
             log.error("Arthas attach failed traceId={} targetId={} host={} sshPort={} errorType={} message={}",
                     traceId, target.id, target.host, target.sshPort, error.getClass().getName(), error.getMessage(), error);
@@ -380,6 +478,9 @@ public class ArthasInstallationService {
                 traceId, target.id, target.host, target.sshPort, target.httpPort,
                 target.targetType, safeValue(target.containerName), operatorName);
         try {
+            if (properties.standalone.enabled) {
+                copyHttpClientJar(target, traceId, operatorName);
+            }
             var command = shellExecutor.buildTargetCommand(target, detachScript(target));
             log.info("Arthas detach command prepared traceId={} strategy={} containerName={}",
                     traceId, strategy(target), safeValue(target.containerName));
@@ -394,7 +495,7 @@ public class ArthasInstallationService {
                 throw new IllegalArgumentException("断开 Arthas 失败：" + message);
             }
             auditService.record("ARTHAS_DETACH", "ACCESS_TARGET", target.id, operatorName, "SUCCESS", null, null, null);
-            return new Result(true, "Arthas 已断开", "-", "-", traceId, preview(result.stdout()));
+            return new Result(true, "Arthas 已断开", "-", "-", traceId, preview(result.stdout()), false);
         } catch (IOException error) {
             log.error("Arthas detach failed traceId={} targetId={} host={} sshPort={} errorType={} message={}",
                     traceId, target.id, target.host, target.sshPort, error.getClass().getName(), error.getMessage(), error);
@@ -417,6 +518,15 @@ public class ArthasInstallationService {
         if (result.stdout().contains("INSTALL_VALIDATE_FAILED")) {
             return "Arthas 下载完成后校验失败，请检查目标机网络或手动清理 ~/.arthas/arthas-boot.jar 后重试："
                     + preview(result.stdout());
+        }
+        if (result.stdout().contains("FORDRING_HTTP_CLIENT_MISSING")) {
+            return "目标环境未找到 Fordring Arthas HTTP Client，无法校验和解压离线 Arthas 包";
+        }
+        if (result.stdout().contains("SHA256_MISMATCH")) {
+            return "上传到目标环境的离线 Arthas 包 SHA-256 校验失败";
+        }
+        if (result.stdout().contains("PACKAGE_EXTRACT_FAILED")) {
+            return "上传到目标环境的离线 Arthas 包解压失败";
         }
         return preview(result.stderr().isBlank() ? result.stdout() : result.stderr());
     }
@@ -490,6 +600,40 @@ public class ArthasInstallationService {
         }
     }
 
+    private Result installOffline(AccessTarget target, String operatorName, String traceId) throws IOException {
+        if (standalonePackageProvider == null) {
+            throw new IOException("standalone Arthas package provider 未初始化");
+        }
+        var extracted = standalonePackageProvider.extract();
+        var remoteHostPath = "/tmp/fordring-arthas-bin-" + UUID.randomUUID().toString().substring(0, 8) + ".zip";
+        var targetPath = "/tmp/fordring-arthas-bin-" + UUID.randomUUID().toString().substring(0, 8) + ".zip";
+        try {
+            copyHttpClientJar(target, traceId, operatorName);
+            shellExecutor.upload(traceId, target, extracted.path(), remoteHostPath);
+            var offlineScript = offlineInstallScript(target.targetType == TargetType.DOCKER_CONTAINER ? targetPath : remoteHostPath,
+                    extracted.sha256());
+            var command = target.targetType == TargetType.DOCKER_CONTAINER
+                    ? "docker cp " + shellQuote(remoteHostPath) + " " + shellQuote(target.containerName + ":" + targetPath)
+                    + " && rm -f " + shellQuote(remoteHostPath)
+                    + " && " + shellExecutor.buildTargetCommand(target, offlineScript)
+                    : shellExecutor.buildTargetCommand(target, offlineScript);
+            var result = shellExecutor.execute(traceId, target, command, COMMAND_TIMEOUT);
+            var success = result.exitStatus() != null && result.exitStatus() == 0;
+            log.info("Offline Arthas installation finished traceId={} targetId={} success={} exitStatus={} stdoutPreview={} stderrPreview={}",
+                    traceId, target.id, success, result.exitStatus(), preview(result.stdout()), preview(result.stderr()));
+            if (!success) {
+                var message = installFailureMessage(result);
+                auditService.record("ARTHAS_INSTALL", "ACCESS_TARGET", target.id, operatorName, "FAILED", message, null, null);
+                throw new IllegalArgumentException("安装 Arthas 失败：" + message);
+            }
+            auditService.record("ARTHAS_INSTALL", "ACCESS_TARGET", target.id, operatorName, "SUCCESS", null, null, null);
+            return new Result(true, "Arthas 安装完成", extractInstalledVersion(result.stdout()),
+                    extractValue(result.stdout(), "source"), traceId, preview(result.stdout()), false);
+        } finally {
+            Files.deleteIfExists(extracted.path());
+        }
+    }
+
     private Path extractHttpClientJar() throws IOException {
         try (InputStream input = getClass().getResourceAsStream(HTTP_CLIENT_JAR_RESOURCE)) {
             if (input == null) {
@@ -537,6 +681,8 @@ public class ArthasInstallationService {
                 .replace("__HTTP_PORT__", target.httpPort.toString())
                 .replace("__ARTHAS_USERNAME__", shellQuote(properties.arthas.username == null ? "arthas" : properties.arthas.username))
                 .replace("__ARTHAS_PASSWORD__", shellQuote(properties.arthas.password == null ? "" : properties.arthas.password))
+                .replace("__AUTHORIZATION_HEADER__", shellQuote(authorizationHeader()))
+                .replace("__ARTHAS_TARGET_IP__", properties.standalone.enabled ? "127.0.0.1" : "0.0.0.0")
                 .replace("__FORCE_RESTART__", forceRestart ? "true" : "false");
     }
 
@@ -545,7 +691,25 @@ public class ArthasInstallationService {
             throw new IllegalArgumentException("目标缺少 Arthas HTTP 端口");
         }
         return DETACH_SCRIPT_TEMPLATE
-                .replace("__HTTP_PORT__", target.httpPort.toString());
+                .replace("__HTTP_PORT__", target.httpPort.toString())
+                .replace("__AUTHORIZATION_HEADER__", shellQuote(authorizationHeader()));
+    }
+
+    private String offlineInstallScript(String source, String sha256) {
+        return OFFLINE_INSTALL_SCRIPT_TEMPLATE
+                .replace("__SOURCE__", shellQuote(source))
+                .replace("__EXPECTED_SHA256__", shellQuote(sha256));
+    }
+
+    private String authorizationHeader() {
+        if (properties.arthas.password == null || properties.arthas.password.isBlank()) {
+            return "";
+        }
+        var username = properties.arthas.username == null || properties.arthas.username.isBlank()
+                ? "arthas"
+                : properties.arthas.username;
+        var credential = username + ":" + properties.arthas.password;
+        return "Basic " + java.util.Base64.getEncoder().encodeToString(credential.getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 
     private static String extractInstalledVersion(String output) {
@@ -612,7 +776,8 @@ public class ArthasInstallationService {
         return target.targetType == TargetType.DOCKER_CONTAINER ? "docker-exec" : "ssh-host";
     }
 
-    public record Result(boolean installed, String message, String version, String installationPath, String traceId, String outputPreview) {
+    public record Result(boolean installed, String message, String version, String installationPath, String traceId,
+                         String outputPreview, boolean attachedByCurrentRequest) {
     }
 
 }

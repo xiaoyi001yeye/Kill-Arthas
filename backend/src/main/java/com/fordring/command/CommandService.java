@@ -150,7 +150,28 @@ public class CommandService {
         execution.status = status;
         execution.errorMessage = errorMessage;
         execution.durationMs = Duration.between(execution.executedAt, Instant.now()).toMillis();
-        return executionRepository.save(execution);
+        var saved = executionRepository.save(execution);
+        cleanupStandaloneHistory();
+        return saved;
+    }
+
+    private void cleanupStandaloneHistory() {
+        var maxRecords = properties.commandHistory.maxLocalRecords;
+        if (!properties.standalone.enabled || maxRecords <= 0) {
+            return;
+        }
+        var terminalCount = executionRepository.countByStatusNot(CommandStatus.RUNNING);
+        var excess = Math.min(terminalCount - maxRecords, Integer.MAX_VALUE);
+        if (excess <= 0) {
+            return;
+        }
+        var ids = executionRepository.findByStatusNotOrderByExecutedAtAsc(
+                        CommandStatus.RUNNING, PageRequest.of(0, (int) excess))
+                .stream()
+                .map(execution -> execution.id)
+                .toList();
+        outputRepository.deleteByExecutionIdIn(ids);
+        executionRepository.deleteAllByIdInBatch(ids);
     }
 
     private String snapshot(AccessTarget target) {
