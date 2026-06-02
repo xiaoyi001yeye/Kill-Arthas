@@ -16,6 +16,13 @@ type ExecuteOptions = {
   timeoutSeconds?: number;
 };
 
+let requestSequence = 0;
+
+function createRequestId() {
+  requestSequence = (requestSequence + 1) % Number.MAX_SAFE_INTEGER;
+  return `ws-${Date.now().toString(36)}-${requestSequence.toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 export function useTerminalSession({ enabled, targetId, terminalRef }: UseTerminalSessionOptions) {
   const wsRef = useRef<WebSocket>();
   const [ready, setReady] = useState(false);
@@ -73,7 +80,7 @@ export function useTerminalSession({ enabled, targetId, terminalRef }: UseTermin
     }
     const payload: Record<string, unknown> = {
       type: 'EXECUTE_COMMAND',
-      requestId: crypto.randomUUID(),
+      requestId: createRequestId(),
       targetId,
       source,
       command,
@@ -92,7 +99,7 @@ export function useTerminalSession({ enabled, targetId, terminalRef }: UseTermin
     }
     wsRef.current.send(JSON.stringify({
       type: 'STOP_COMMAND',
-      requestId: crypto.randomUUID(),
+      requestId: createRequestId(),
       executionId,
       targetId
     }));
